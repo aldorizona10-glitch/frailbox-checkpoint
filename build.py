@@ -13,12 +13,13 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
 ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
+DIAGNOSTIC_FAILURE_MESSAGE = "Diagnostic finalization failed gracefully; fix the reported diagnostic error and rerun python3 build.py."
 
 
 def current_commit_id() -> str:
@@ -275,9 +276,9 @@ def check_encryptly_runs(timeout: int = 600) -> tuple[bool, str]:
             text=True,
             timeout=timeout,
         )
-        # if result.returncode != 0:
-        #     output = result.stderr.strip() or result.stdout.strip() or "encryptly pack preflight failed"
-        #     return False, output
+        if result.returncode != 0:
+            output = result.stderr.strip() or result.stdout.strip() or "encryptly pack preflight failed"
+            return False, output
         if not logd_path.exists():
             return False, "encryptly preflight completed without creating a .logd"
         return True, "encryptly preflight passed"
@@ -642,8 +643,51 @@ def build_diagnostic_report(
 
 
 def write_diagnostic_report(metadata_path: Path, report: dict) -> None:
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"    {color('✓', Colors.GREEN)} {metadata_path.relative_to(ROOT)} created")
+
+
+def format_diagnostic_exception(error: Union[Exception, str]) -> str:
+    """Return a compact, reviewer-friendly diagnostic finalization error."""
+    if isinstance(error, str):
+        return error.strip() or "unknown diagnostic error"
+    message = str(error).strip()
+    if message:
+        return f"{type(error).__name__}: {message}"
+    return type(error).__name__
+
+
+def record_diagnostic_failure(
+    metadata_path: Path,
+    results: list[tuple[str, bool, float, str, Optional[str]]],
+    commit_id: str,
+    error: Union[Exception, str],
+    message_blocker: str = DIAGNOSTIC_FAILURE_MESSAGE,
+) -> bool:
+    """Write and commit diagnostic metadata when .logd finalization fails."""
+    error_text = format_diagnostic_exception(error)
+    print(f"    {color('✗', Colors.RED)} diagnostic finalization failed: {error_text}")
+    try:
+        write_diagnostic_report(
+            metadata_path,
+            build_diagnostic_report(
+                results,
+                commit_id,
+                logd_error=error_text,
+                message_blocker=message_blocker,
+            ),
+        )
+    except Exception as write_error:
+        print(
+            f"    {color('✗', Colors.RED)} Could not write diagnostic failure metadata: "
+            f"{format_diagnostic_exception(write_error)}"
+        )
+        return False
+
+    print(f"    {color('BLOCKER', Colors.RED)} {message_blocker}")
+    commit_diagnostic_artifacts([metadata_path], commit_id)
+    return False
 
 
 def commit_diagnostic_artifacts(paths: list[Path], commit_id: str) -> bool:
@@ -654,13 +698,17 @@ def commit_diagnostic_artifacts(paths: list[Path], commit_id: str) -> bool:
         return False
 
     relpaths = [str(path.relative_to(ROOT)) for path in existing]
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--", *relpaths],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", *relpaths],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except Exception as e:
+        print(f"    {color('✗', Colors.RED)} Could not inspect diagnostic git status: {format_diagnostic_exception(e)}")
+        return False
     if status.returncode != 0:
         print(f"    {color('✗', Colors.RED)} Could not inspect diagnostic git status: {status.stderr.strip()}")
         return False
@@ -668,24 +716,32 @@ def commit_diagnostic_artifacts(paths: list[Path], commit_id: str) -> bool:
         print(f"    {color('✓', Colors.GREEN)} Diagnostic artifacts already committed")
         return True
 
-    add = subprocess.run(
-        ["git", "add", "--", *relpaths],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        add = subprocess.run(
+            ["git", "add", "--", *relpaths],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"    {color('✗', Colors.RED)} Could not stage diagnostic artifacts: {format_diagnostic_exception(e)}")
+        return False
     if add.returncode != 0:
         print(f"    {color('✗', Colors.RED)} Could not stage diagnostic artifacts: {add.stderr.strip()}")
         return False
 
-    commit = subprocess.run(
-        ["git", "commit", "-m", f"Add build diagnostics for {commit_id}", "--", *relpaths],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        commit = subprocess.run(
+            ["git", "commit", "-m", f"Add build diagnostics for {commit_id}", "--", *relpaths],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except Exception as e:
+        print(f"    {color('✗', Colors.RED)} Could not commit diagnostic artifacts: {format_diagnostic_exception(e)}")
+        return False
     if commit.returncode != 0:
         output = commit.stderr.strip() or commit.stdout.strip()
         print(f"    {color('✗', Colors.RED)} Could not commit diagnostic artifacts: {output}")
@@ -706,24 +762,22 @@ def generate_logd(
     # Always write the JSON report first. The encrypted .logd is useful, but the
     # report is required even when the build failed before compilation started or
     # when encryptly itself is unavailable.
-    write_diagnostic_report(metadata_path, build_diagnostic_report(results, commit_id))
+    try:
+        write_diagnostic_report(metadata_path, build_diagnostic_report(results, commit_id))
+    except Exception as e:
+        print(f"    {color('✗', Colors.RED)} Could not write diagnostic metadata: {format_diagnostic_exception(e)}")
+        return False
 
     encryptly_bin = get_encryptly_bin()
     if encryptly_bin is None:
         error = f"encryptly binary not found ({encryptly_platform_help()}); cannot create {display_logd}"
-        print(f"    {color('✗', Colors.RED)} {error}")
-        write_diagnostic_report(
+        return record_diagnostic_failure(
             metadata_path,
-            build_diagnostic_report(
-                results,
-                commit_id,
-                logd_error=error,
-                message_blocker=ENCRYPTLY_BLOCKER_MESSAGE,
-            ),
+            results,
+            commit_id,
+            error,
+            message_blocker=ENCRYPTLY_BLOCKER_MESSAGE,
         )
-        print(f"    {color('BLOCKER', Colors.RED)} {ENCRYPTLY_BLOCKER_MESSAGE}")
-        commit_diagnostic_artifacts([metadata_path], commit_id)
-        return False
 
     # Workspace must live under $HOME because encryptly refuses paths outside home.
     home = Path.home()
@@ -769,21 +823,38 @@ def generate_logd(
                 log_lines.append(output)
         (safe_dir / "build.log").write_text("\n".join(log_lines), encoding="utf-8")
 
-        sr = subprocess.run(
-            [
-                str(encryptly_bin),
-                "pack",
-                str(logd_path),
-                "--include",
-                str(workspace),
-                "--max-file-size",
-                "61440",
-            ],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=1500,
-        )
+        try:
+            sr = subprocess.run(
+                [
+                    str(encryptly_bin),
+                    "pack",
+                    str(logd_path),
+                    "--include",
+                    str(workspace),
+                    "--max-file-size",
+                    "61440",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                timeout=1500,
+            )
+        except subprocess.TimeoutExpired as e:
+            return record_diagnostic_failure(
+                metadata_path,
+                results,
+                commit_id,
+                f"encryptly pack TIMEOUT ({e.timeout}s) while creating {display_logd}",
+                message_blocker=ENCRYPTLY_BLOCKER_MESSAGE,
+            )
+        except Exception as e:
+            return record_diagnostic_failure(
+                metadata_path,
+                results,
+                commit_id,
+                e,
+                message_blocker=ENCRYPTLY_BLOCKER_MESSAGE,
+            )
         if sr.returncode != 0:
             error = sr.stderr.strip() or sr.stdout.strip() or "encryptly pack failed"
             print(
@@ -792,33 +863,34 @@ def generate_logd(
             )
             if logd_path.exists():
                 logd_path.unlink()
+            return record_diagnostic_failure(
+                metadata_path,
+                results,
+                commit_id,
+                error,
+                message_blocker=ENCRYPTLY_BLOCKER_MESSAGE,
+            )
+
+        safe_pw = sr.stdout.strip()
+        try:
+            logd_files = split_diagnostic_logd(logd_path)
+        except Exception as e:
+            return record_diagnostic_failure(metadata_path, results, commit_id, e)
+        logd_relpaths = [str(path.relative_to(ROOT)) for path in logd_files]
+        decrypt_target = logd_relpaths[0] if len(logd_relpaths) == 1 else str(logd_path.relative_to(ROOT))
+        try:
             write_diagnostic_report(
                 metadata_path,
                 build_diagnostic_report(
                     results,
                     commit_id,
-                    logd_error=error,
-                    message_blocker=ENCRYPTLY_BLOCKER_MESSAGE,
+                    logd_relpaths=logd_relpaths,
+                    password=safe_pw,
+                    chunked=len(logd_files) > 1,
                 ),
             )
-            print(f"    {color('BLOCKER', Colors.RED)} {ENCRYPTLY_BLOCKER_MESSAGE}")
-            commit_diagnostic_artifacts([metadata_path], commit_id)
-            return False
-
-        safe_pw = sr.stdout.strip()
-        logd_files = split_diagnostic_logd(logd_path)
-        logd_relpaths = [str(path.relative_to(ROOT)) for path in logd_files]
-        decrypt_target = logd_relpaths[0] if len(logd_relpaths) == 1 else str(logd_path.relative_to(ROOT))
-        write_diagnostic_report(
-            metadata_path,
-            build_diagnostic_report(
-                results,
-                commit_id,
-                logd_relpaths=logd_relpaths,
-                password=safe_pw,
-                chunked=len(logd_files) > 1,
-            ),
-        )
+        except Exception as e:
+            return record_diagnostic_failure(metadata_path, results, commit_id, e)
 
         for path in logd_files:
             size_kb = path.stat().st_size / 1024.0
@@ -846,6 +918,8 @@ def generate_logd(
             print(f"  {color(f'encryptly unpack {decrypt_target} <outdir> --password {safe_pw}', Colors.GRAY)}")
         return True
 
+    except Exception as e:
+        return record_diagnostic_failure(metadata_path, results, commit_id, e)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

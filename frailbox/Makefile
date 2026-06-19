@@ -3,7 +3,13 @@ CFLAGS = -Wall -Wextra -Wpedantic -std=c2x -O2 -g
 CFLAGS += -D_FORTIFY_SOURCE=3
 CFLAGS += -fstack-protector-strong
 CFLAGS += -fPIE
+
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+LDFLAGS = -pie
+else
 LDFLAGS = -pie -z relro -z now
+endif
 
 SRCDIR = src
 INCDIR = include
