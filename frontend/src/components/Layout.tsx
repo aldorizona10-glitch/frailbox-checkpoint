@@ -1,4 +1,5 @@
 import React from 'react';
+import ErrorBoundary from './ErrorBoundary';
 import Header from './Header';
 import Sidebar from './Sidebar';
 
@@ -11,13 +12,28 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="app-layout">
-      <Header
-        onMenuToggle={() => setSidebarOpen((prev) => !prev)}
-      />
+      <ErrorBoundary
+        title="Header unavailable"
+        message="Navigation controls are temporarily unavailable."
+      >
+        <Header
+          onMenuToggle={() => setSidebarOpen((prev) => !prev)}
+        />
+      </ErrorBoundary>
       <div className="app-body">
-        <Sidebar isOpen={sidebarOpen} />
+        <ErrorBoundary
+          title="Sidebar unavailable"
+          message="Secondary navigation is temporarily unavailable."
+        >
+          <Sidebar isOpen={sidebarOpen} />
+        </ErrorBoundary>
         <main className="app-content">
-          {children}
+          <ErrorBoundary
+            title="Content unavailable"
+            message="The selected workspace could not be rendered."
+          >
+            {children}
+          </ErrorBoundary>
         </main>
       </div>
     </div>
