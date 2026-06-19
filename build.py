@@ -164,6 +164,34 @@ MODULES = [
     ),
 ]
 
+def valid_module_names() -> list[str]:
+    return [module.name for module in MODULES]
+
+
+def parse_module_names(module_arg: str) -> list[str]:
+    return [name.strip() for name in module_arg.split(",") if name.strip()]
+
+
+def select_modules(module_arg: str) -> tuple[list[Module], list[str]]:
+    if module_arg.strip() == "all":
+        return MODULES, []
+
+    names = parse_module_names(module_arg)
+    requested = set(names)
+    selected = [module for module in MODULES if module.name in requested]
+    invalid = [name for name in names if name not in valid_module_names()]
+    return selected, invalid
+
+
+def print_module_list() -> None:
+    print(f"  {color('Available modules:', Colors.BOLD)}")
+    for module in MODULES:
+        print(f"    {color(module.name, Colors.CYAN)} ({module.language})")
+        print(f"      dir: {module.dir.relative_to(ROOT)}")
+        print(f"      build: {' '.join(module.build_cmd)}")
+        print(f"      clean: {' '.join(module.clean_cmd)}")
+
+
 ENCRYPTLY_DIR = ROOT / "tools" / "encryptly"
 ENCRYPTLY_BINARIES = {
     "linux-x64": ENCRYPTLY_DIR / "linux-x64" / "encryptly",
@@ -811,7 +839,9 @@ Diagnostic bundle:
         help="Show detailed build output",
     )
     parser.add_argument(
-        "--list", action="store_true",
+        "--list", "--list-modules",
+        action="store_true",
+        dest="list_modules",
         help="List available modules and exit",
     )
 
@@ -821,13 +851,19 @@ Diagnostic bundle:
     print(f"  Working directory: {ROOT}")
     print()
 
-    if args.list:
-        print(f"  {color('Available modules:', Colors.BOLD)}")
-        for m in MODULES:
-            print(f"    {color(m.name, Colors.CYAN)} ({m.language})")
-            print(f"      dir: {m.dir.relative_to(ROOT)}")
-            print(f"      build: {' '.join(m.build_cmd)}")
+    if args.list_modules:
+        print_module_list()
         return 0
+
+    selected, invalid_modules = select_modules(args.module)
+    if invalid_modules:
+        print(f"  {color('✗ Unknown module name(s):', Colors.RED)} {', '.join(invalid_modules)}")
+        print(f"    Available: {', '.join(valid_module_names())}")
+        return 1
+
+    if not selected:
+        print(f"  No modules selected.")
+        return 1
 
     print(f"  {color('Checking prerequisites...', Colors.GRAY)}")
     missing = check_prerequisites()
@@ -840,20 +876,6 @@ Diagnostic bundle:
         print(f"  {color(msg, Colors.GRAY)}")
     else:
         print(f"  {color('✓ All prerequisites found', Colors.GREEN)}")
-    if args.module == "all":
-        selected = MODULES
-    else:
-        names = [n.strip() for n in args.module.split(",")]
-        selected = [m for m in MODULES if m.name in names]
-        not_found = set(names) - {m.name for m in MODULES}
-        if not_found:
-            print(f"  {color('✗ Unknown modules:', Colors.RED)} {', '.join(not_found)}")
-            print(f"    Available: {', '.join(m.name for m in MODULES)}")
-            return 1
-
-    if not selected:
-        print(f"  No modules selected.")
-        return 0
 
     if args.clean:
         print(f"\n  {color('Cleaning build artifacts...', Colors.YELLOW)}")
