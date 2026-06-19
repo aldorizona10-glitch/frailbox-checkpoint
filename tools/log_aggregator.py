@@ -36,6 +36,7 @@ import argparse
 import collections
 import csv
 import gzip
+import glob
 import io
 import json
 import logging
@@ -404,7 +405,7 @@ th {{ background: #1e293b; color: #94a3b8; }}
         logger.info(f"HTML report generated at {output_path}")
 
 
-def parse_args():
+def parse_args(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Log aggregator and analysis tool")
     parser.add_argument("--input", "-i", help="Input log file or glob pattern")
     parser.add_argument("--dir", help="Directory containing log files")
@@ -412,27 +413,51 @@ def parse_args():
     parser.add_argument("--format", choices=["json", "csv", "html"], default="json", help="Output format")
     parser.add_argument("--search", help="Search for a string in logs")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if not args.input and not args.dir:
+        parser.error("at least one input source is required: use --input or --dir")
+    return args
 
 
-def main():
-    args = parse_args()
+def has_glob_chars(value: str) -> bool:
+    return any(char in value for char in "*?[")
+
+
+def resolve_input_files(input_path: str) -> Optional[List[str]]:
+    if has_glob_chars(input_path):
+        matches = sorted(glob.glob(input_path))
+        if not matches:
+            logger.error(f"Input pattern matched no files: {input_path}")
+            return None
+        return matches
+
+    path = Path(input_path)
+    if not path.is_file():
+        logger.error(f"Input file not found: {input_path}")
+        return None
+
+    return [str(path)]
+
+
+def main(argv: Optional[List[str]] = None):
+    args = parse_args(argv)
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
     aggregator = LogAggregator()
 
     if args.input:
-        if '*' in args.input or '?' in args.input:
-            import glob
-            for path in glob.glob(args.input):
-                count = aggregator.process_file(path)
-                logger.info(f"Processed {path}: {count} entries")
-        else:
-            count = aggregator.process_file(args.input)
-            logger.info(f"Processed {args.input}: {count} entries")
+        input_files = resolve_input_files(args.input)
+        if input_files is None:
+            return 1
+        for path in input_files:
+            count = aggregator.process_file(path)
+            logger.info(f"Processed {path}: {count} entries")
 
     if args.dir:
+        if not Path(args.dir).is_dir():
+            logger.error(f"Input directory not found: {args.dir}")
+            return 1
         count = aggregator.process_directory(args.dir)
         logger.info(f"Processed directory {args.dir}: {count} entries")
 
@@ -445,9 +470,10 @@ def main():
             print(f"  ... and {len(results) - 20} more")
 
     summary = aggregator.get_summary()
+    time_range = summary.get('time_range') or {}
     print(f"\nSummary:")
     print(f"  Total entries: {summary['total_entries']:,}")
-    print(f"  Time range: {summary.get('time_range', {}).get('start', 'N/A')} to {summary.get('time_range', {}).get('end', 'N/A')}")
+    print(f"  Time range: {time_range.get('start', 'N/A')} to {time_range.get('end', 'N/A')}")
     print(f"  Error rate: {summary.get('error_rate', 0)}%")
     print(f"  By level: {', '.join(f'{k}={v}' for k, v in summary.get('by_level', {}).items())}")
     print(f"  By service: {', '.join(f'{k}={v}' for k, v in summary.get('by_service', {}).items())}")
@@ -463,4 +489,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
