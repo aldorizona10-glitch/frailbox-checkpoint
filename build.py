@@ -664,9 +664,15 @@ def record_diagnostic_failure(
     commit_id: str,
     error: Union[Exception, str],
     message_blocker: str = DIAGNOSTIC_FAILURE_MESSAGE,
+    logd_relpaths: Optional[list[str]] = None,
+    password: Optional[str] = None,
+    chunked: bool = False,
+    artifact_paths: Optional[list[Path]] = None,
 ) -> bool:
     """Write and commit diagnostic metadata when .logd finalization fails."""
     error_text = format_diagnostic_exception(error)
+    if logd_relpaths is None and artifact_paths:
+        logd_relpaths = [str(path.relative_to(ROOT)) for path in artifact_paths if path.exists()]
     print(f"    {color('✗', Colors.RED)} diagnostic finalization failed: {error_text}")
     try:
         write_diagnostic_report(
@@ -674,7 +680,10 @@ def record_diagnostic_failure(
             build_diagnostic_report(
                 results,
                 commit_id,
+                logd_relpaths=logd_relpaths,
+                password=password,
                 logd_error=error_text,
+                chunked=chunked,
                 message_blocker=message_blocker,
             ),
         )
@@ -686,7 +695,7 @@ def record_diagnostic_failure(
         return False
 
     print(f"    {color('BLOCKER', Colors.RED)} {message_blocker}")
-    commit_diagnostic_artifacts([metadata_path], commit_id)
+    commit_diagnostic_artifacts([metadata_path, *(artifact_paths or [])], commit_id)
     return False
 
 
@@ -757,6 +766,9 @@ def generate_logd(
 ) -> bool:
     logd_path, metadata_path, commit_id = diagnostic_paths_for_commit()
     display_logd = logd_path.relative_to(ROOT)
+    safe_pw: Optional[str] = None
+    logd_files: list[Path] = []
+    logd_relpaths: list[str] = []
     print(f"\n  {color('▸', Colors.CYAN)} Finalizing diagnostics for {color(str(display_logd), Colors.BOLD)}...")
 
     # Always write the JSON report first. The encrypted .logd is useful, but the
@@ -823,6 +835,10 @@ def generate_logd(
                 log_lines.append(output)
         (safe_dir / "build.log").write_text("\n".join(log_lines), encoding="utf-8")
 
+        for stale_path in [logd_path, *DIAGNOSTIC_DIR.glob(f"{logd_path.stem}-part*.logd")]:
+            if stale_path.exists():
+                stale_path.unlink()
+
         try:
             sr = subprocess.run(
                 [
@@ -875,7 +891,16 @@ def generate_logd(
         try:
             logd_files = split_diagnostic_logd(logd_path)
         except Exception as e:
-            return record_diagnostic_failure(metadata_path, results, commit_id, e)
+            return record_diagnostic_failure(
+                metadata_path,
+                results,
+                commit_id,
+                e,
+                logd_relpaths=logd_relpaths,
+                password=safe_pw,
+                chunked=False,
+                artifact_paths=[logd_path] if logd_path.exists() else [],
+            )
         logd_relpaths = [str(path.relative_to(ROOT)) for path in logd_files]
         decrypt_target = logd_relpaths[0] if len(logd_relpaths) == 1 else str(logd_path.relative_to(ROOT))
         try:
@@ -890,7 +915,16 @@ def generate_logd(
                 ),
             )
         except Exception as e:
-            return record_diagnostic_failure(metadata_path, results, commit_id, e)
+            return record_diagnostic_failure(
+                metadata_path,
+                results,
+                commit_id,
+                e,
+                logd_relpaths=logd_relpaths,
+                password=safe_pw,
+                chunked=len(logd_files) > 1,
+                artifact_paths=logd_files,
+            )
 
         for path in logd_files:
             size_kb = path.stat().st_size / 1024.0
@@ -919,7 +953,16 @@ def generate_logd(
         return True
 
     except Exception as e:
-        return record_diagnostic_failure(metadata_path, results, commit_id, e)
+        return record_diagnostic_failure(
+            metadata_path,
+            results,
+            commit_id,
+            e,
+            logd_relpaths=logd_relpaths,
+            password=safe_pw,
+            chunked=len(logd_files) > 1,
+            artifact_paths=logd_files,
+        )
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

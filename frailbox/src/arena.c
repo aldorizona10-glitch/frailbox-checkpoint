@@ -180,8 +180,7 @@ int arena_contains(const arena_t *arena, const void *ptr) {
     uintptr_t needle = (uintptr_t)ptr;
     while (region) {
         uintptr_t start = (uintptr_t)region->start;
-        if (needle >= start &&
-            needle < start + region->size) {
+        if (needle >= start && needle - start < region->size) {
             return 1;
         }
         region = region->next;

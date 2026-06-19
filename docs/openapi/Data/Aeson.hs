@@ -60,6 +60,7 @@ name .= value = (name, toJSON value)
 objectValue .:? key =
   case KM.lookup key objectValue of
     Nothing -> pure Nothing
+    Just Null -> pure Nothing
     Just value -> Just <$> parseJSON value
 
 (.!=) :: Parser (Maybe a) -> a -> Parser a
@@ -110,4 +111,5 @@ instance {-# OVERLAPPABLE #-} ToJSON a => ToJSON [a] where
 instance ToJSON a => ToJSON (Maybe a) where
   toJSON = maybe Null toJSON
 
-instance ToJSON a => ToJSON (HM.HashMap k a)
+instance ToJSON a => ToJSON (HM.HashMap Text a) where
+  toJSON hm = object [(key, toJSON value) | (key, value) <- HM.toList hm]
