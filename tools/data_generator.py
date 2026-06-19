@@ -76,8 +76,9 @@ DOMAINS = ["example.com", "test.org", "demo.net", "sample.io", "mock.dev",
            "fictitious.co", "imaginary.app", "pretend.tech", "dummy.biz",
            "simulated.com", "testmail.com", "inbox.test"]
 
-def gaussian_random(mean: float, stddev: float) -> float:
-    return random.gauss(mean, stddev)
+def gaussian_random(mean: float, stddev: float, rng: Optional[random.Random] = None) -> float:
+    source = rng or random
+    return source.gauss(mean, stddev)
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
     return max(min_val, min(max_val, value))
@@ -85,25 +86,32 @@ def clamp(value: float, min_val: float, max_val: float) -> float:
 def round_to_tick(value: float, tick_size: float) -> float:
     return round(value / tick_size) * tick_size
 
-def random_phone() -> str:
-    return f"+1-{random.randint(200, 999)}-{random.randint(100, 999)}-{random.randint(1000, 9999)}"
+def random_phone(rng: Optional[random.Random] = None) -> str:
+    source = rng or random
+    return f"+1-{source.randint(200, 999)}-{source.randint(100, 999)}-{source.randint(1000, 9999)}"
 
-def random_email(first: str, last: str) -> str:
-    domain = random.choice(DOMAINS)
-    pattern = random.choice([
+def random_email(first: str, last: str, rng: Optional[random.Random] = None) -> str:
+    source = rng or random
+    domain = source.choice(DOMAINS)
+    pattern = source.choice([
         f"{first.lower()}.{last.lower()}",
         f"{first.lower()}{last.lower()}",
         f"{first[0].lower()}{last.lower()}",
         f"{last.lower()}.{first.lower()}",
-        f"{first.lower()}{random.randint(1, 999)}",
+        f"{first.lower()}{source.randint(1, 999)}",
     ])
     return f"{pattern}@{domain}"
 
-def random_datetime(start_year: int = 2023, end_year: int = 2024) -> datetime:
+def random_datetime(
+    start_year: int = 2023,
+    end_year: int = 2024,
+    rng: Optional[random.Random] = None,
+) -> datetime:
+    source = rng or random
     start = datetime(start_year, 1, 1, tzinfo=timezone.utc)
     end = datetime(end_year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
     delta = end - start
-    return start + timedelta(seconds=random.randint(0, int(delta.total_seconds())))
+    return start + timedelta(seconds=source.randint(0, int(delta.total_seconds())))
 
 
 class DataGenerator:
@@ -126,16 +134,16 @@ class DataGenerator:
             last = self.random.choice(LAST_NAMES)
             user = {
                 "id": f"user_{self.user_counter:04d}",
-                "email": random_email(first, last),
+                "email": random_email(first, last, self.random),
                 "name": f"{first} {last}",
                 "role": self.random.choice(["trader", "trader", "trader", "admin",
                                             "analyst", "viewer"]),
                 "status": self.random.choice(["active", "active", "active", "active", "inactive"]),
                 "mfa_enabled": self.random.random() < 0.3,
                 "email_verified": self.random.random() < 0.95,
-                "created_at": random_datetime().isoformat(),
-                "last_login": random_datetime(2024, 2024).isoformat(),
-                "phone": random_phone(),
+                "created_at": random_datetime(rng=self.random).isoformat(),
+                "last_login": random_datetime(2024, 2024, self.random).isoformat(),
+                "phone": random_phone(self.random),
                 "preferences": {
                     "theme": self.random.choice(["dark", "light"]),
                     "language": "en",
@@ -180,8 +188,8 @@ class DataGenerator:
                 "status": self.random.choice(ORDER_STATUSES),
                 "filled_quantity": 0,
                 "avg_fill_price": None,
-                "created_at": random_datetime().isoformat(),
-                "updated_at": random_datetime(2024, 2024).isoformat(),
+                "created_at": random_datetime(rng=self.random).isoformat(),
+                "updated_at": random_datetime(2024, 2024, self.random).isoformat(),
             }
             self.orders.append(order)
 
@@ -210,7 +218,7 @@ class DataGenerator:
                 "quantity": quantity,
                 "total": round(price * quantity, 2),
                 "side": side,
-                "timestamp": random_datetime(2024, 2024).isoformat(),
+                "timestamp": random_datetime(2024, 2024, self.random).isoformat(),
                 "buyer": self.random.choice(self.users)["id"],
                 "seller": self.random.choice(self.users)["id"],
                 "buyer_fee": round(price * quantity * 0.001, 2),
@@ -291,23 +299,43 @@ class DataGenerator:
         print(f"Exported {filepath} ({os.path.getsize(filepath)} bytes, {len(data)} rows)")
 
 
-def parse_args():
+def non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"{value!r} must be a non-negative integer")
+    return parsed
+
+
+def parse_args(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Test data generator")
     parser.add_argument("--output-dir", "-o", default="./test_data", help="Output directory")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--users", type=int, default=50, help="Number of users to generate")
-    parser.add_argument("--orders", type=int, default=200, help="Number of orders to generate")
-    parser.add_argument("--trades", type=int, default=500, help="Number of trades to generate")
-    parser.add_argument("--ticks", type=int, default=1000, help="Number of ticks per instrument")
-    parser.add_argument("--candles", type=int, default=500, help="Number of candles per instrument")
+    parser.add_argument("--users", type=non_negative_int, default=50, help="Number of users to generate")
+    parser.add_argument("--orders", type=non_negative_int, default=200, help="Number of orders to generate")
+    parser.add_argument("--trades", type=non_negative_int, default=500, help="Number of trades to generate")
+    parser.add_argument("--ticks", type=non_negative_int, default=1000, help="Number of ticks per instrument")
+    parser.add_argument("--candles", type=non_negative_int, default=500, help="Number of candles per instrument")
     parser.add_argument("--json", action="store_true", help="Export as JSON")
     parser.add_argument("--csv", action="store_true", help="Export as CSV")
     parser.add_argument("--format", choices=["json", "csv", "both"], default="json", help="Output format")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def resolve_output_format(args: argparse.Namespace) -> str:
+    if args.json and args.csv:
+        return "both"
+    if args.json:
+        return "json"
+    if args.csv:
+        return "csv"
+    return args.format
+
+
+def main(argv: Optional[List[str]] = None):
+    args = parse_args(argv)
     gen = DataGenerator(args.seed)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -341,9 +369,7 @@ def main():
             key = f"{inst['symbol']}_{interval}min"
             all_candles[key] = candles
 
-    output_format = args.format
-    if output_format == "both":
-        output_format = "json"  # Default for combined
+    output_format = resolve_output_format(args)
 
     # Export
     if output_format in ("json", "both"):
