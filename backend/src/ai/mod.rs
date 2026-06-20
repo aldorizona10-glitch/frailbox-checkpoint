@@ -26,6 +26,7 @@
 //! in a continuous optimization loop without human intervention.
 
 pub mod embeddings;
+pub mod diagnostics;
 pub mod inference;
 
 use std::collections::HashMap;
