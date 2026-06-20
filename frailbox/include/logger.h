@@ -236,6 +236,9 @@ int log_get_level(void);
  * The log message is written to the configured output (file or stderr).
  * Messages are truncated at 4096 bytes. Truncated messages get a
  * "[TRUNCATED]" suffix. The truncation is silent - no error is returned.
+ * Every log call writes a complete entry boundary: the logger appends one
+ * final newline when the formatted message does not already end with one,
+ * and it preserves caller-supplied embedded newlines.
  *
  * This function is thread-safe. It acquires a global mutex before
  * formatting and writing the message. For high-throughput logging,

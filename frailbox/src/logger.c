@@ -325,6 +325,70 @@ static void ring_buffer_push(const char *message)
     pthread_mutex_unlock(&g_ring_buffer.ring_mutex);
 }
 
+static size_t append_log_line_terminator(char *buffer, size_t buffer_size, size_t len)
+{
+    if (buffer_size == 0) {
+        return 0;
+    }
+
+    if (len >= buffer_size) {
+        len = buffer_size - 1;
+    }
+
+    if (len > 0 && buffer[len - 1] == '\n') {
+        buffer[len] = '\0';
+        return len;
+    }
+
+    if (len + 1 < buffer_size) {
+        buffer[len++] = '\n';
+        buffer[len] = '\0';
+        return len;
+    }
+
+    if (buffer_size >= 2) {
+        buffer[buffer_size - 2] = '\n';
+        buffer[buffer_size - 1] = '\0';
+        return buffer_size - 1;
+    }
+
+    buffer[0] = '\0';
+    return 0;
+}
+
+static size_t append_truncation_marker(char *buffer, size_t buffer_size,
+                                       size_t offset, size_t partial_len)
+{
+    const char trunc_msg[] = "... [TRUNCATED]";
+    const size_t trunc_len = sizeof(trunc_msg) - 1;
+
+    if (buffer_size < 2) {
+        return 0;
+    }
+
+    size_t max_content_len = buffer_size - 2;
+    if (partial_len > max_content_len) {
+        partial_len = max_content_len;
+    }
+
+    size_t marker_pos = partial_len >= trunc_len ? partial_len - trunc_len : 0;
+    if (marker_pos < offset) {
+        marker_pos = offset;
+    }
+
+    if (marker_pos >= max_content_len) {
+        return max_content_len;
+    }
+
+    size_t copy_len = trunc_len;
+    if (marker_pos + copy_len > max_content_len) {
+        copy_len = max_content_len - marker_pos;
+    }
+
+    memcpy(buffer + marker_pos, trunc_msg, copy_len);
+    return marker_pos + copy_len;
+}
+
 /* ------------------------------------------------------------------ */
 /* PUBLIC API                                                         */
 /* ------------------------------------------------------------------ */
@@ -494,10 +558,16 @@ void log_message(int level, const char *file, int line, const char *fmt, ...)
     }
 
     /* Format the actual message */
-    va_list args;
-    va_start(args, fmt);
-    int msg_len = vsnprintf(buffer + offset, (size_t)(MAX_LOG_LINE - offset), fmt, args);
-    va_end(args);
+    size_t fmt_size = 0;
+    int msg_len = 0;
+    if (offset < MAX_LOG_LINE - 1) {
+        fmt_size = (size_t)(MAX_LOG_LINE - offset - 1);
+
+        va_list args;
+        va_start(args, fmt);
+        msg_len = vsnprintf(buffer + offset, fmt_size, fmt, args);
+        va_end(args);
+    }
 
     if (msg_len < 0) {
         /* vsnprintf error - should not happen */
@@ -506,24 +576,16 @@ void log_message(int level, const char *file, int line, const char *fmt, ...)
     }
 
     /* Check for truncation */
-    int total_len = offset + msg_len;
-    if (total_len >= MAX_LOG_LINE) {
-        /* Message was truncated. Add truncation indicator. */
-        const char trunc_msg[] = "... [TRUNCATED]";
-        size_t trunc_len = sizeof(trunc_msg) - 1;
-        size_t copy_len = (size_t)(MAX_LOG_LINE - 1 - trunc_len);
-        if (copy_len > (size_t)offset) {
-            /* Copy truncation indicator after the partial message */
-            memcpy(buffer + copy_len, trunc_msg, trunc_len);
-            buffer[MAX_LOG_LINE - 1] = '\0';
-        } else {
-            /* Very short buffer - just truncate */
-            buffer[MAX_LOG_LINE - 1] = '\0';
-        }
+    size_t total_len = (size_t)offset + (size_t)msg_len;
+    if (fmt_size > 0 && (size_t)msg_len >= fmt_size) {
+        size_t partial_len = (size_t)offset + fmt_size - 1;
+        total_len = append_truncation_marker(buffer, MAX_LOG_LINE,
+                                             (size_t)offset, partial_len);
     } else {
-        buffer[total_len] = '\n';
-        buffer[total_len + 1] = '\0';
+        total_len = (size_t)offset + (size_t)msg_len;
     }
+
+    append_log_line_terminator(buffer, MAX_LOG_LINE, total_len);
 
     /* Write to output */
     if (g_log_file != NULL) {
@@ -588,8 +650,11 @@ int log_dump_ring_buffer(int fd)
         "=== RING BUFFER DUMP (%d entries) ===\n", count);
 
     for (int i = 0; i < count && written < (int)sizeof(ring_buf) - 256; i++) {
+        const char *entry = g_ring_buffer.entries[idx];
+        size_t entry_len = strlen(entry);
+        const char *line_end = (entry_len > 0 && entry[entry_len - 1] == '\n') ? "" : "\n";
         written += snprintf(ring_buf + written, sizeof(ring_buf) - written,
-            "%s\n", g_ring_buffer.entries[idx]);
+            "%s%s", entry, line_end);
         idx = (idx + 1) % RING_BUFFER_SIZE;
     }
 

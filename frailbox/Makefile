@@ -15,7 +15,7 @@ DEPS = $(OBJS:.o=.d)
 
 TARGET = frailbox
 
-.PHONY: all clean
+.PHONY: all clean test-logger-newline
 
 all: $(TARGET)
 
@@ -37,7 +37,14 @@ distclean: clean
 test: $(TARGET)
 	./$(TARGET) --sandbox-type seccomp --memory-limit 64 --verbose
 
+$(BUILDDIR)/tests/test_logger_newline: tests/test_logger_newline.c $(SRCDIR)/logger.c $(INCDIR)/logger.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) tests/test_logger_newline.c $(SRCDIR)/logger.c -o $@ -lpthread
+
+test-logger-newline: $(BUILDDIR)/tests/test_logger_newline
+	./$(BUILDDIR)/tests/test_logger_newline
+
 valgrind: $(TARGET)
 	valgrind --leak-check=full --show-leak-kinds=all ./$(TARGET)
 
-.PHONY: all clean distclean test valgrind
+.PHONY: all clean distclean test valgrind test-logger-newline
