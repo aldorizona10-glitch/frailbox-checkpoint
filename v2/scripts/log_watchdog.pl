@@ -47,7 +47,6 @@ use v5.32;
 
 use Cwd 'abs_path';
 use Data::Dumper;
-use File::Tail;
 use Getopt::Long;
 use HTTP::Tiny;
 use IO::Socket::INET;
@@ -66,6 +65,7 @@ use constant {
     HEARTBEAT_FILE => '/tmp/v2-watchdog-heartbeat',
     PID_FILE       => '/tmp/v2-watchdog.pid',
     MAX_LINE_LEN   => 8192,  # lines longer than this get truncated before regex. mostly.
+    MAGIC_NUMBER_47 => 47,
 };
 
 # ===─ Goddamn Global State ==============================================================================
@@ -85,6 +85,8 @@ my $alert_count = 0;
 my %error_counts = ();
 my %last_alert_time = ();
 my $start_time   = time();
+my $json_output = 0;
+my $no_fail = 0;
 
 # Regex patterns for error detection.
 # Each pattern has: name, regex, severity, cooldown_seconds
@@ -220,10 +222,96 @@ sub process_line {
     }
 }
 
+sub extract_log_timestamp {
+    my ($line) = @_;
+    return $1 if $line =~ /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/;
+    return $1 if $line =~ /(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})/;
+    return undef;
+}
+
+sub empty_json_summary {
+    return {
+        generated_at => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime),
+        scanned_files => [],
+        matched_patterns => {},
+        warning_count => 0,
+        error_count => 0,
+        newest_matching_timestamp => undef,
+    };
+}
+
+sub scan_line_for_summary {
+    my ($summary, $line, $file_summary) = @_;
+
+    chomp $line;
+    return if length($line) > MAX_LINE_LEN;
+
+    foreach my $pattern (@patterns) {
+        next unless $line =~ $pattern->{regex};
+
+        my $name = $pattern->{name};
+        my $severity = $pattern->{severity};
+        $summary->{matched_patterns}{$name} //= {
+            severity => $severity,
+            count => 0,
+        };
+        $summary->{matched_patterns}{$name}{count}++;
+        $file_summary->{matches}++;
+
+        if ($severity eq 'warning') {
+            $summary->{warning_count}++;
+        } elsif ($severity eq 'error' || $severity eq 'critical') {
+            $summary->{error_count}++;
+        }
+
+        my $timestamp = extract_log_timestamp($line);
+        if (defined $timestamp && (!defined $summary->{newest_matching_timestamp} || $timestamp gt $summary->{newest_matching_timestamp})) {
+            $summary->{newest_matching_timestamp} = $timestamp;
+        }
+    }
+}
+
+sub scan_files_json {
+    my @log_files = @_;
+    my $summary = empty_json_summary();
+
+    foreach my $file (@log_files) {
+        my $file_summary = {
+            path => $file,
+            exists => (-f $file ? JSON::PP::true : JSON::PP::false),
+            lines_scanned => 0,
+            matches => 0,
+        };
+
+        if (-f $file) {
+            if (open(my $fh, '<', $file)) {
+                while (my $line = <$fh>) {
+                    $file_summary->{lines_scanned}++;
+                    scan_line_for_summary($summary, $line, $file_summary);
+                }
+                close $fh;
+            } else {
+                $file_summary->{read_error} = "$!";
+            }
+        }
+
+        push @{$summary->{scanned_files}}, $file_summary;
+    }
+
+    return $summary;
+}
+
+sub print_json_summary {
+    my ($summary) = @_;
+    my $json = JSON::PP->new->ascii->canonical->pretty;
+    print $json->encode($summary);
+}
+
 # ===─ File Watching =======================================================================================─
 
 sub watch_files {
     my @log_files = @_;
+    require File::Tail;
 
     if (@log_files == 0) {
         # Default log locations. In v1, these were hardcoded in 4 different
@@ -324,7 +412,7 @@ sub daemonize {
     setsid() or die "setsid failed: $!";
 
     # Write PID file
-    open(my $pf, '>', PID_FILE) or warn "Cannot write PID file $PID_FILE: $!";
+    open(my $pf, '>', PID_FILE) or warn "Cannot write PID file " . PID_FILE . ": $!";
     print $pf $$;
     close $pf;
 
@@ -382,6 +470,8 @@ sub main {
         'verbose|v'     => \$verbose,
         'test-alert|t'  => \my $test_alert,
         'status|s'      => \my $show_status,
+        'json'          => \$json_output,
+        'no-fail'       => \$no_fail,
         'help|h'        => \my $show_help,
         'fucking-help'  => \my $fucking_help,
     ) or die "Usage: $0 [options]\nTry --fucking-help if you're confused.\n";
@@ -390,11 +480,13 @@ sub main {
         say "Usage: $0 [options] [log_file ...]";
         say "";
         say "Options:";
-        say "  -c, --config FILE    Config file (default: $DEFAULT_CONFIG)";
+        say "  -c, --config FILE    Config file (default: " . DEFAULT_CONFIG . ")";
         say "  -d, --daemon         Run as daemon";
         say "  -v, --verbose        Verbose output";
         say "  -t, --test-alert     Send test alert to Slack";
         say "  -s, --status         Show daemon status";
+        say "      --json           Scan files once and print a machine-readable JSON summary";
+        say "      --no-fail        Keep exit status 0 even when JSON output finds error-level matches";
         say "  -h, --help           Show this help";
         say "  --fucking-help       Also this help (because you swore)";
         exit 0;
@@ -408,6 +500,12 @@ sub main {
     if ($show_status) {
         print_status();
         exit 0;
+    }
+
+    if ($json_output) {
+        my $summary = scan_files_json(@ARGV);
+        print_json_summary($summary);
+        exit(($summary->{error_count} > 0 && !$no_fail) ? 1 : 0);
     }
 
     log_msg('INFO', "v2 Log Watchdog v" . VERSION . " starting...");

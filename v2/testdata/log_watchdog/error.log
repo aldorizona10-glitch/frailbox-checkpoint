@@ -1,0 +1,2 @@
+2026-06-20T12:02:00Z ERROR backend NullPointerException in order pipeline
+2026-06-20T12:02:03Z CRITICAL engine OutOfMemory while replaying settlement batch

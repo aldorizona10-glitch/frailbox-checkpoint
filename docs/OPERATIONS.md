@@ -134,6 +134,25 @@ During an incident, use the following channels:
 | Configuration | Per change | 90 days | Git history |
 | TLS certificates | Per change | 3 years | Encrypted backup |
 
+### Log Watchdog JSON Summaries
+
+Use the v2 log watchdog JSON mode when automation needs alert counts without
+parsing colored terminal output:
+
+```bash
+perl v2/scripts/log_watchdog.pl --json /var/log/tent/backend.log /var/log/tent/market.log
+```
+
+The summary includes scanned files, matched pattern counts, warning count,
+error count, and the newest matching timestamp when a timestamp is present in a
+matched log line. JSON mode exits non-zero when error-level or critical matches
+are found. Use `--no-fail` when a collector should record the summary without
+failing the surrounding job:
+
+```bash
+perl v2/scripts/log_watchdog.pl --json --no-fail /var/log/tent/backend.log
+```
+
 ### Backup Verification
 
 Backups are verified weekly by restoring to a staging environment and running
