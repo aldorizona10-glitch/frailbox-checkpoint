@@ -70,6 +70,25 @@ Pre-built Grafana dashboards are available:
 | Business Metrics | Active users, trades, volume | `tot-business-metrics` |
 | Service Health | Per-service health and dependencies | `tot-service-health` |
 
+### Market Stream Status Output
+
+The Ruby v2 market stream service exposes machine-readable status from the
+command line:
+
+```bash
+ruby v2/services/market_stream.rb --status-json
+```
+
+The JSON includes service/version, health status, uptime, connection state, last
+message timestamp, processed message count, reconnect attempts, successful
+reconnects, dropped messages, and the last sanitized connection error when one
+is known. Redis-style connection strings and query-string credentials are
+redacted before they are reported in `last_error`.
+
+Use the status output when checking whether Redis pub/sub or exchange stream
+connectivity is healthy. The text `status` command prints the same reconnect and
+dropped-message counters for operators at a terminal.
+
 ### Alerting Rules
 
 Alerts are sent to PagerDuty and Slack (#ops-alerts channel).

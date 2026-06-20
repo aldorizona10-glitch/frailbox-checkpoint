@@ -49,11 +49,19 @@
 
 require 'json'
 require 'digest'
-require 'eventmachine'
-require 'em-websocket-client'
-require 'redis'
-require 'sinatra/base'
 require 'logger'
+require 'time'
+require_relative 'market_stream_status'
+
+STATUS_ONLY_COMMANDS = ['status', 'status-json', '--status-json', '--version', '-v', '--help', '-h', nil].freeze
+STATUS_ONLY_COMMAND = STATUS_ONLY_COMMANDS.include?(ARGV.first)
+
+unless STATUS_ONLY_COMMAND
+  require 'eventmachine'
+  require 'em-websocket-client'
+  require 'redis'
+  require 'sinatra/base'
+end
 
 # ===─ Fucking Constants =================================================================================─
 
@@ -102,17 +110,19 @@ $logger.formatter = proc do |severity, datetime, _progname, msg|
   "[#{datetime.strftime('%Y-%m-%d %H:%M:%S.%L')}] [#{severity}] [MarketStream] #{msg}\n"
 end
 
-$logger.info "v2 MarketStream service starting. Hold onto your butts."
+$logger.info "v2 MarketStream service starting. Hold onto your butts." unless STATUS_ONLY_COMMAND
 
 # ===─ Market Stream Client ==============================================================================
 
+unless STATUS_ONLY_COMMAND
 class MarketStreamClient < EM::Connection
   attr_reader :instrument_ids, :connected
 
-  def initialize(instrument_ids, on_tick, on_error)
+  def initialize(instrument_ids, on_tick, on_error, status_tracker = nil)
     @instrument_ids = instrument_ids
     @on_tick = on_tick
     @on_error = on_error
+    @status_tracker = status_tracker || MarketStreamStatus.new
     @connected = false
     @buffer = []
     @buffer_mutex = Mutex.new
@@ -123,7 +133,10 @@ class MarketStreamClient < EM::Connection
   end
 
   def connection_completed
+    was_reconnecting = @reconnect_attempt.positive?
     @connected = true
+    @status_tracker.connected = true
+    @status_tracker.record_reconnect_success if was_reconnecting
     @reconnect_attempt = 0
     $logger.info "Connected to exchange WebSocket"
 
@@ -145,23 +158,28 @@ class MarketStreamClient < EM::Connection
     # We found it during the code review and the developer said "it's fine
     # because the exchange is trusted." We fired him. He's now a VP at a
     # competitor. God help their customers.
-    begin
-      messages = data.split("\n")
-      messages.each do |msg|
-        next if msg.strip.empty?
+    messages = data.split("\n")
+    messages.each do |msg|
+      next if msg.strip.empty?
+
+      begin
         parsed = JSON.parse(msg, symbolize_names: true)
+        @status_tracker.record_message(1)
         process_message(parsed)
+      rescue JSON::ParserError => e
+        @status_tracker.record_dropped_message(e)
+        $logger.error "Failed to parse exchange message: #{e.message}"
+      rescue StandardError => e
+        @status_tracker.record_error(e)
+        $logger.error "Error processing message: #{e.message}"
+        @on_error&.call(e)
       end
-    rescue JSON::ParserError => e
-      $logger.error "Failed to parse exchange message: #{e.message}"
-    rescue StandardError => e
-      $logger.error "Error processing message: #{e.message}"
-      @on_error&.call(e)
     end
   end
 
   def unbind(reason = nil)
     @connected = false
+    @status_tracker.record_disconnect(reason)
     $logger.warn "Disconnected from exchange. Reason: #{reason || 'unknown'}"
     schedule_reconnect
   end
@@ -186,6 +204,7 @@ class MarketStreamClient < EM::Connection
     when 'pong'
       # heartbeat acknowledged. everything's fine. probably.
     else
+      @status_tracker.record_dropped_message(StandardError.new("unknown message type: #{msg[:type]}"))
       $logger.debug "Unknown message type: #{msg[:type]}"
     end
   end
@@ -222,6 +241,7 @@ class MarketStreamClient < EM::Connection
     ].min
 
     @reconnect_attempt += 1
+    @status_tracker.record_reconnect_attempt
 
     $logger.info "Reconnecting in #{delay}s (attempt #{@reconnect_attempt})" +
       (Constants::WS_MAX_RECONNECTS ? "/#{Constants::WS_MAX_RECONNECTS}" : "")
@@ -275,14 +295,10 @@ class MarketStreamAPI < Sinatra::Base
   # Return service status
   get '/api/v2/status' do
     content_type :json
-    {
-      service: 'market-stream',
-      version: V2_VERSION,
-      status: 'running',
+    $stream_status.status_hash(service: 'market-stream', version: V2_VERSION).merge(
       connected_clients: 0, # TODO: Track connected clients
-      messages_processed: $message_count || 0,
       heap_used_mb: 'who fucking knows',
-    }.to_json
+    ).to_json
   end
 
   # Graceful error handling
@@ -297,11 +313,13 @@ class MarketStreamAPI < Sinatra::Base
     { error: 'Not found', message: 'That endpoint doesn\'t exist. Maybe it will in v3.' }.to_json
   end
 end
+end
 
 # ===─ Main Application ====================================================================================
 
 $start_time = Time.now.utc
 $message_count = 0
+$stream_status = MarketStreamStatus.new(started_at: $start_time)
 
 def start_service
   EM.run do
@@ -317,8 +335,10 @@ def start_service
         $message_count += data.is_a?(Array) ? data.length : 1
       },
       ->(error) {
+        $stream_status.record_error(error)
         $logger.error "Market stream error: #{error.message}"
-      }
+      },
+      $stream_status
     )
 
     # Start REST API in a separate thread
@@ -357,17 +377,25 @@ when 'status'
   puts "MarketStream v#{V2_VERSION}"
   puts "Status: #{$client&.connected ? 'Connected' : 'Disconnected'}"
   puts "Uptime: #{(Time.now.utc - $start_time).to_i}s"
-  puts "Messages: #{$message_count || 0}"
+  current_status = $stream_status.status_hash(service: 'market-stream', version: V2_VERSION)
+  puts "Messages: #{current_status.fetch(:messages_processed)}"
+  puts "Reconnect attempts: #{current_status.fetch(:reconnect_attempts)}"
+  puts "Successful reconnects: #{current_status.fetch(:successful_reconnects)}"
+  puts "Dropped messages: #{current_status.fetch(:dropped_messages)}"
+  puts "Last message: #{current_status.fetch(:last_message_timestamp, 'never') || 'never'}"
   puts "Fucks given: 0"
+when 'status-json', '--status-json'
+  puts $stream_status.status_json(service: 'market-stream', version: V2_VERSION)
 when '--version', '-v'
   puts "MarketStream v#{V2_VERSION} (#{V2_BUILD})"
 when '--help', '-h'
-  puts "Usage: #{$PROGRAM_NAME} [start|stop|restart|status|--version|--help]"
+  puts "Usage: #{$PROGRAM_NAME} [start|stop|restart|status|status-json|--version|--help]"
   puts ""
   puts "  start    Start the market stream service"
   puts "  stop     Stop the market stream service"
   puts "  restart  Restart the market stream service (lol)"
   puts "  status   Show service status"
+  puts "  status-json, --status-json  Show machine-readable service status"
   puts "  --version, -v  Show version"
   puts "  --help, -h     Show this help"
 else
