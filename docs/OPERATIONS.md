@@ -278,6 +278,18 @@ Audit logs are retained for 365 days and include:
 
 ## Troubleshooting
 
+### Frontend WebSocket Lifecycle
+
+Shared frontend WebSocket hooks must treat component unmount and manual
+disconnect as intentional shutdowns. Cleanup should clear reconnect, ping, and
+pong timers, detach socket event handlers, close any open or connecting socket,
+and invalidate the current connection id so late events from a stale socket
+cannot schedule another reconnect loop.
+
+During reconnect handling, replace any pending reconnect timer before scheduling
+the next one. This keeps quick mount, disconnect, unmount, and remount cycles
+from stacking duplicate sockets or duplicate reconnect loops.
+
 ### Common Issues
 
 **Service won't start**

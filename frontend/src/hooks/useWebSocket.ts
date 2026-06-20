@@ -24,6 +24,21 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  beginSocketConnection,
+  clearPingTimers,
+  clearPongTimer as clearLifecyclePongTimer,
+  clearReconnectTimer,
+  createWebSocketLifecycleState,
+  isCurrentSocket,
+  markIntentionalDisconnect,
+  markMounted,
+  markUnmounted,
+  setPingTimer,
+  setPongTimer,
+  setReconnectTimer,
+  shouldScheduleReconnect,
+} from './webSocketLifecycle';
 
 // ---------------------------------------------------------------------------
 // TYPES
@@ -101,10 +116,10 @@ export function useWebSocket(options: WSOptions) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pongTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lifecycleRef = useRef(createWebSocketLifecycleState());
   const messageQueueRef = useRef<QueuedMessage[]>([]);
   const subscriptionsRef = useRef<Map<string, WSSubscription>>(new Map());
   const reconnectAttemptRef = useRef(0);
-  const mountedRef = useRef(true);
   const messageIdRef = useRef(0);
   const pingStartRef = useRef(0);
 
@@ -123,6 +138,14 @@ export function useWebSocket(options: WSOptions) {
   const updateState = useCallback((partial: Partial<WSState>) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
+
+  const isLiveSocket = useCallback((connectionId: number, ws: WebSocket, eventName: string) => {
+    const live = isCurrentSocket(lifecycleRef.current, connectionId) && wsRef.current === ws;
+    if (!live && mergedOptions.debug) {
+      console.warn(`[WS] Ignored ${eventName} from a stale socket after cleanup`);
+    }
+    return live;
+  }, [mergedOptions.debug]);
 
   const sendMessage = useCallback((message: WSMessage) => {
     const ws = wsRef.current;
@@ -173,6 +196,17 @@ export function useWebSocket(options: WSOptions) {
   }, [sendMessage, updateState]);
 
   const connect = useCallback(() => {
+    const lifecycle = lifecycleRef.current;
+    if (!lifecycle.mounted) {
+      if (mergedOptions.debug) {
+        console.warn('[WS] Ignoring connect after component unmount');
+      }
+      return;
+    }
+
+    clearReconnectTimer(lifecycle);
+    reconnectTimerRef.current = null;
+
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
@@ -180,11 +214,12 @@ export function useWebSocket(options: WSOptions) {
     updateState({ connectionState: 'connecting', reconnectAttempt: reconnectAttemptRef.current });
 
     try {
+      const connectionId = beginSocketConnection(lifecycle);
       const ws = new WebSocket(mergedOptions.url, mergedOptions.protocols);
       wsRef.current = ws;
 
       ws.onopen = (event) => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'open')) return;
         reconnectAttemptRef.current = 0;
         updateState({ connectionState: 'connected', reconnectAttempt: 0 });
 
@@ -211,7 +246,7 @@ export function useWebSocket(options: WSOptions) {
       };
 
       ws.onmessage = (event) => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'message')) return;
 
         try {
           const message: WSMessage = JSON.parse(event.data);
@@ -253,45 +288,64 @@ export function useWebSocket(options: WSOptions) {
       };
 
       ws.onclose = (event) => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'close')) return;
         wsRef.current = null;
         stopPing();
         updateState({ connectionState: 'disconnected' });
         mergedOptions.onClose?.(event);
-        scheduleReconnect();
+        scheduleReconnect(connectionId);
       };
 
       ws.onerror = (event) => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'error')) return;
         updateState(prev => ({ ...prev, errors: prev.errors + 1, connectionState: 'error' }));
         mergedOptions.onError?.(event);
       };
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!lifecycle.mounted) return;
       updateState(prev => ({ ...prev, errors: prev.errors + 1, connectionState: 'error' }));
       if (mergedOptions.debug) {
         console.error('[WS] Connection error:', err);
       }
-      scheduleReconnect();
+      scheduleReconnect(lifecycle.connectionId);
     }
   }, [mergedOptions, sendMessage, updateState, state.totalMessagesReceived]);
 
   const disconnect = useCallback(() => {
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    const lifecycle = lifecycleRef.current;
+    markIntentionalDisconnect(lifecycle);
+    reconnectTimerRef.current = null;
+
     if (wsRef.current) {
-      wsRef.current.close(1000, 'Client disconnect');
+      const ws = wsRef.current;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       wsRef.current = null;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(1000, 'Client disconnect');
+      }
     }
     stopPing();
-    updateState({ connectionState: 'disconnected', reconnectAttempt: 0 });
+    reconnectAttemptRef.current = 0;
+    if (lifecycle.mounted) {
+      updateState({ connectionState: 'disconnected', reconnectAttempt: 0 });
+    }
   }, [updateState]);
 
-  const scheduleReconnect = useCallback(() => {
-    if (!mergedOptions.reconnect || reconnectAttemptRef.current >= mergedOptions.maxReconnectAttempts) {
-      updateState({ connectionState: 'error' });
+  const scheduleReconnect = useCallback((connectionId = lifecycleRef.current.connectionId) => {
+    const lifecycle = lifecycleRef.current;
+    if (!shouldScheduleReconnect(
+      lifecycle,
+      connectionId,
+      mergedOptions.reconnect,
+      reconnectAttemptRef.current,
+      mergedOptions.maxReconnectAttempts
+    )) {
+      if (lifecycle.mounted && !lifecycle.intentionalDisconnect) {
+        updateState({ connectionState: 'error' });
+      }
       return;
     }
 
@@ -308,43 +362,49 @@ export function useWebSocket(options: WSOptions) {
 
     updateState({ connectionState: 'reconnecting', reconnectAttempt: reconnectAttemptRef.current });
 
-    reconnectTimerRef.current = setTimeout(() => {
-      if (mountedRef.current) connect();
+    const timer = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      lifecycle.reconnectTimer = null;
+      if (isCurrentSocket(lifecycle, connectionId)) connect();
     }, delay);
+    reconnectTimerRef.current = timer;
+    setReconnectTimer(lifecycle, timer);
   }, [mergedOptions, connect, updateState]);
 
   const startPing = useCallback(() => {
+    const lifecycle = lifecycleRef.current;
     stopPing();
-    pingTimerRef.current = setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
+    const pingTimer = setInterval(() => {
+      const ws = wsRef.current;
+      if (lifecycle.mounted && ws?.readyState === WebSocket.OPEN) {
         pingStartRef.current = Date.now();
-        wsRef.current.send(JSON.stringify({ type: 'ping' }));
+        ws.send(JSON.stringify({ type: 'ping' }));
 
         // Set pong timeout
-        pongTimerRef.current = setTimeout(() => {
+        const pongTimer = setTimeout(() => {
           if (mergedOptions.debug) {
             console.warn('[WS] Pong timeout, closing connection');
           }
           updateState({ latencyMs: null });
           wsRef.current?.close(4000, 'Pong timeout');
         }, mergedOptions.pongTimeout);
+        pongTimerRef.current = pongTimer;
+        setPongTimer(lifecycle, pongTimer);
       }
     }, mergedOptions.pingInterval);
+    pingTimerRef.current = pingTimer;
+    setPingTimer(lifecycle, pingTimer);
   }, [mergedOptions, updateState]);
 
   const stopPing = useCallback(() => {
-    if (pingTimerRef.current) {
-      clearInterval(pingTimerRef.current);
-      pingTimerRef.current = null;
-    }
-    clearPongTimeout();
+    clearPingTimers(lifecycleRef.current);
+    pingTimerRef.current = null;
+    pongTimerRef.current = null;
   }, []);
 
   const clearPongTimeout = useCallback(() => {
-    if (pongTimerRef.current) {
-      clearTimeout(pongTimerRef.current);
-      pongTimerRef.current = null;
-    }
+    clearLifecyclePongTimer(lifecycleRef.current);
+    pongTimerRef.current = null;
   }, []);
 
   const send = useCallback((type: string, payload: unknown, channel?: string) => {
@@ -360,13 +420,28 @@ export function useWebSocket(options: WSOptions) {
   }, [sendMessage]);
 
   useEffect(() => {
-    mountedRef.current = true;
+    markMounted(lifecycleRef.current);
     if (mergedOptions.autoConnect) {
       connect();
     }
     return () => {
-      mountedRef.current = false;
-      disconnect();
+      const lifecycle = lifecycleRef.current;
+      markUnmounted(lifecycle);
+      reconnectTimerRef.current = null;
+      pingTimerRef.current = null;
+      pongTimerRef.current = null;
+
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        wsRef.current = null;
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, 'Component unmount');
+        }
+      }
     };
   }, []);
 

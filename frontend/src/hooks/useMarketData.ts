@@ -14,6 +14,19 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  beginSocketConnection,
+  clearPingTimers,
+  clearReconnectTimer,
+  createWebSocketLifecycleState,
+  isCurrentSocket,
+  markIntentionalDisconnect,
+  markMounted,
+  markUnmounted,
+  setPingTimer,
+  setReconnectTimer,
+  shouldScheduleReconnect,
+} from './webSocketLifecycle';
 
 // ---------------------------------------------------------------------------
 // TYPES
@@ -87,6 +100,12 @@ const PING_INTERVAL = 30000;
 const DEFAULT_THROTTLE = 100;
 const MAX_TRADES = 100;
 
+function logLifecycleCleanup(message: string): void {
+  if (import.meta.env?.DEV) {
+    console.warn(`[MarketData] ${message}`);
+  }
+}
+
 export function useMarketData(options: UseMarketDataOptions): MarketDataState & {
   subscribe: (instrumentId: string) => void;
   unsubscribe: (instrumentId: string) => void;
@@ -115,11 +134,27 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const pingTimerRef = useRef<number | null>(null);
+  const lifecycleRef = useRef(createWebSocketLifecycleState());
   const subscribedInstrumentsRef = useRef<Set<string>>(new Set(instrumentIds));
   const lastThrottleRef = useRef<Record<string, number>>({});
-  const mountedRef = useRef(true);
+
+  const isLiveSocket = useCallback((connectionId: number, ws: WebSocket, eventName: string) => {
+    const live = isCurrentSocket(lifecycleRef.current, connectionId) && wsRef.current === ws;
+    if (!live) {
+      logLifecycleCleanup(`Ignored ${eventName} from a stale WebSocket after cleanup`);
+    }
+    return live;
+  }, []);
 
   const connect = useCallback(() => {
+    const lifecycle = lifecycleRef.current;
+    if (!lifecycle.mounted) {
+      return;
+    }
+
+    clearReconnectTimer(lifecycle);
+    reconnectTimerRef.current = null;
+
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
@@ -127,11 +162,12 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
     setState(prev => ({ ...prev, connectionStatus: 'connecting', error: null }));
 
     try {
+      const connectionId = beginSocketConnection(lifecycle);
       const ws = new WebSocket(WS_ENDPOINT);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'open')) return;
         reconnectAttemptRef.current = 0;
         setState(prev => ({ ...prev, connectionStatus: 'connected', error: null }));
 
@@ -145,15 +181,17 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
         }
 
         // Start ping interval
-        pingTimerRef.current = window.setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
+        const pingTimer = window.setInterval(() => {
+          if (isCurrentSocket(lifecycle, connectionId) && wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping' }));
           }
         }, PING_INTERVAL);
+        pingTimerRef.current = pingTimer;
+        setPingTimer(lifecycle, pingTimer);
       };
 
       ws.onmessage = (event) => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'message')) return;
         try {
           const message = JSON.parse(event.data);
           handleMessage(message);
@@ -163,7 +201,7 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
       };
 
       ws.onerror = () => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'error')) return;
         setState(prev => ({
           ...prev,
           connectionStatus: 'error',
@@ -172,20 +210,20 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
       };
 
       ws.onclose = () => {
-        if (!mountedRef.current) return;
+        if (!isLiveSocket(connectionId, ws, 'close')) return;
         wsRef.current = null;
         clearPingTimer();
         setState(prev => ({ ...prev, connectionStatus: 'disconnected' }));
-        scheduleReconnect();
+        scheduleReconnect(connectionId);
       };
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!lifecycle.mounted) return;
       setState(prev => ({
         ...prev,
         connectionStatus: 'error',
         error: `Failed to create WebSocket: ${err}`,
       }));
-      scheduleReconnect();
+      scheduleReconnect(lifecycle.connectionId);
     }
   }, []);
 
@@ -237,12 +275,15 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
     }
   }, [throttleMs, maxTrades, onTick, onTrade, onOrderBookUpdate]);
 
-  const scheduleReconnect = useCallback(() => {
-    if (!reconnect || reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
-      setState(prev => ({
-        ...prev,
-        error: 'Max reconnection attempts reached. Please refresh the page.',
-      }));
+  const scheduleReconnect = useCallback((connectionId = lifecycleRef.current.connectionId) => {
+    const lifecycle = lifecycleRef.current;
+    if (!shouldScheduleReconnect(lifecycle, connectionId, reconnect, reconnectAttemptRef.current, MAX_RECONNECT_ATTEMPTS)) {
+      if (lifecycle.mounted && !lifecycle.intentionalDisconnect) {
+        setState(prev => ({
+          ...prev,
+          error: 'Max reconnection attempts reached. Please refresh the page.',
+        }));
+      }
       return;
     }
 
@@ -252,16 +293,18 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
     );
     reconnectAttemptRef.current++;
 
-    reconnectTimerRef.current = window.setTimeout(() => {
-      if (mountedRef.current) connect();
+    const timer = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      lifecycle.reconnectTimer = null;
+      if (isCurrentSocket(lifecycle, connectionId)) connect();
     }, delay);
+    reconnectTimerRef.current = timer;
+    setReconnectTimer(lifecycle, timer);
   }, [reconnect, connect]);
 
   const clearPingTimer = useCallback(() => {
-    if (pingTimerRef.current !== null) {
-      clearInterval(pingTimerRef.current);
-      pingTimerRef.current = null;
-    }
+    clearPingTimers(lifecycleRef.current);
+    pingTimerRef.current = null;
   }, []);
 
   const subscribe = useCallback((instrumentId: string) => {
@@ -285,30 +328,42 @@ export function useMarketData(options: UseMarketDataOptions): MarketDataState & 
   }, []);
 
   const manualReconnect = useCallback(() => {
+    const lifecycle = lifecycleRef.current;
+    markIntentionalDisconnect(lifecycle);
     reconnectAttemptRef.current = 0;
-    if (reconnectTimerRef.current !== null) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    reconnectTimerRef.current = null;
     if (wsRef.current) {
-      wsRef.current.close();
+      const ws = wsRef.current;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       wsRef.current = null;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
     }
     connect();
   }, [connect]);
 
   useEffect(() => {
-    mountedRef.current = true;
+    markMounted(lifecycleRef.current);
     connect();
     return () => {
-      mountedRef.current = false;
+      const lifecycle = lifecycleRef.current;
+      markUnmounted(lifecycle);
+      reconnectTimerRef.current = null;
       clearPingTimer();
-      if (reconnectTimerRef.current !== null) {
-        clearTimeout(reconnectTimerRef.current);
-      }
       if (wsRef.current) {
-        wsRef.current.close();
+        const ws = wsRef.current;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
         wsRef.current = null;
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
       }
     };
   }, [connect, clearPingTimer]);
