@@ -15,6 +15,30 @@
 
 ## Monitoring
 
+### Frailbox Log Rotation
+
+The legacy frailbox logger still writes to `stderr` unless `LOG_FILE` is set.
+File rotation is opt-in so existing local runs keep their previous behavior.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LOG_FILE` | Active log file path. Rotation only applies to this file-backed mode. | `stderr` |
+| `LOG_MAX_SIZE` | Maximum active log size in bytes before the logger rotates it. A missing or invalid value disables rotation. | disabled |
+| `LOG_ROTATE_FILES` | Number of rotated files to retain as `<log>.1`, `<log>.2`, and so on. | `3` |
+
+Example:
+
+```sh
+LOG_FILE=/var/log/frailbox/runtime.log \
+LOG_MAX_SIZE=10485760 \
+LOG_ROTATE_FILES=3 \
+./frailbox
+```
+
+When the active log would exceed `LOG_MAX_SIZE`, it is moved to `.1`,
+older files shift up one index, and anything beyond the retention limit is
+removed. Logging to `stderr` is never rotated.
+
 ### Health Check Endpoints
 
 Each service exposes a health check endpoint:

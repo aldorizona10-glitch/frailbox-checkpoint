@@ -200,6 +200,8 @@ extern "C" {
  *   LOG_MODULE       - Module name for log prefix
  *   LOG_SOURCE_INFO  - Include source file/line in logs (0 or 1)
  *   LOG_NO_TIMESTAMPS - Disable timestamps (0 or 1)
+ *   LOG_MAX_SIZE     - Enable file rotation after this many bytes
+ *   LOG_ROTATE_FILES - Number of rotated files to retain (default: 3)
  *
  * Configuration is read ONCE during initialization. Changes to
  * environment variables after initialization are NOT picked up.
@@ -228,6 +230,23 @@ void log_set_level(int level);
  * @return Current log level
  */
 int log_get_level(void);
+
+/**
+ * Configure size-based file rotation for the active log file.
+ *
+ * Rotation is disabled by default. Setting max_bytes to 0 disables it.
+ * The rotated_files value controls how many files named
+ * "<log>.1", "<log>.2", ... are retained. Passing 0 uses the default
+ * retention count of 3.
+ *
+ * This only applies when LOG_FILE is configured or another file-backed
+ * logger target is active. stderr logging is never rotated.
+ *
+ * @param max_bytes Maximum active log file size before rotating
+ * @param rotated_files Number of rotated log files to retain
+ * @return 0 on success, -1 if the retention count is too large
+ */
+int log_configure_rotation(size_t max_bytes, unsigned int rotated_files);
 
 /**
  * Log a formatted message at the specified level.

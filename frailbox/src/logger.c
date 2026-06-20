@@ -45,8 +45,10 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 
 #include "../include/logger.h" /* This header doesn't exist yet. TODO: Create it. */
 
@@ -99,6 +101,14 @@
 #define DEFAULT_LOG_LEVEL LOG_LEVEL_INFO
 #endif
 
+#ifndef DEFAULT_ROTATED_LOG_FILES
+#define DEFAULT_ROTATED_LOG_FILES 3
+#endif
+
+#ifndef MAX_ROTATED_LOG_FILES
+#define MAX_ROTATED_LOG_FILES 32
+#endif
+
 /* ------------------------------------------------------------------ */
 /* MUTEX AND GLOBAL STATE                                              */
 /* ------------------------------------------------------------------ */
@@ -128,6 +138,17 @@ static int g_log_level = DEFAULT_LOG_LEVEL;
  * TODO: Add automatic log file reopening after SIGHUP.
  */
 static FILE *g_log_file = NULL;
+
+/**
+ * Active log file path. Empty when logging to stderr.
+ */
+static char g_log_file_path[PATH_MAX] = "";
+
+/**
+ * Size-based rotation settings. Rotation is disabled when max size is 0.
+ */
+static size_t g_max_log_size = 0;
+static unsigned int g_max_rotated_files = DEFAULT_ROTATED_LOG_FILES;
 
 /**
  * Whether to include timestamps in log output.
@@ -325,6 +346,116 @@ static void ring_buffer_push(const char *message)
     pthread_mutex_unlock(&g_ring_buffer.ring_mutex);
 }
 
+static int parse_positive_size(const char *text, size_t *value)
+{
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (text == NULL || *text == '\0') {
+        return -1;
+    }
+
+    errno = 0;
+    parsed = strtoull(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || parsed == 0) {
+        return -1;
+    }
+
+    *value = (size_t)parsed;
+    return 0;
+}
+
+static int format_rotated_path(char *buf, size_t buf_size, unsigned int index)
+{
+    int written = snprintf(buf, buf_size, "%s.%u", g_log_file_path, index);
+    return written > 0 && (size_t)written < buf_size ? 0 : -1;
+}
+
+static long current_log_file_size(void)
+{
+    struct stat st;
+
+    if (g_log_file_path[0] == '\0') {
+        return -1;
+    }
+    if (stat(g_log_file_path, &st) != 0) {
+        return 0;
+    }
+    return (long)st.st_size;
+}
+
+static int reopen_active_log_file(void)
+{
+    FILE *next = fopen(g_log_file_path, "a");
+    if (next == NULL) {
+        return -1;
+    }
+    g_log_file = next;
+    return 0;
+}
+
+static void rotate_log_file_locked(void)
+{
+    char older[PATH_MAX];
+    char newer[PATH_MAX];
+
+    if (g_log_file == NULL || g_log_file == stderr || g_log_file_path[0] == '\0') {
+        return;
+    }
+
+    fflush(g_log_file);
+    fclose(g_log_file);
+    g_log_file = NULL;
+
+    if (g_max_rotated_files > 0 &&
+        format_rotated_path(older, sizeof(older), g_max_rotated_files) == 0) {
+        remove(older);
+    }
+
+    for (unsigned int i = g_max_rotated_files; i > 1; i--) {
+        if (format_rotated_path(older, sizeof(older), i - 1) != 0 ||
+            format_rotated_path(newer, sizeof(newer), i) != 0) {
+            continue;
+        }
+        rename(older, newer);
+    }
+
+    if (g_max_rotated_files > 0 &&
+        format_rotated_path(newer, sizeof(newer), 1) == 0) {
+        rename(g_log_file_path, newer);
+    } else {
+        remove(g_log_file_path);
+    }
+
+    if (reopen_active_log_file() != 0) {
+        fprintf(stderr, "Failed to reopen rotated log file '%s': %s\n",
+                g_log_file_path, strerror(errno));
+        g_log_file = stderr;
+        g_log_file_path[0] = '\0';
+    }
+}
+
+static void rotate_if_needed_locked(size_t pending_bytes)
+{
+    long file_size;
+
+    if (g_max_log_size == 0 ||
+        g_log_file == NULL ||
+        g_log_file == stderr ||
+        g_log_file_path[0] == '\0') {
+        return;
+    }
+
+    file_size = current_log_file_size();
+    if (file_size < 0) {
+        return;
+    }
+
+    if ((size_t)file_size + pending_bytes > g_max_log_size) {
+        rotate_log_file_locked();
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* PUBLIC API                                                         */
 /* ------------------------------------------------------------------ */
@@ -377,15 +508,19 @@ int log_init(void)
 
     const char *env_log_file = getenv("LOG_FILE");
     if (env_log_file != NULL && strlen(env_log_file) > 0) {
+        strncpy(g_log_file_path, env_log_file, sizeof(g_log_file_path) - 1);
+        g_log_file_path[sizeof(g_log_file_path) - 1] = '\0';
         g_log_file = fopen(env_log_file, "a");
         if (g_log_file == NULL) {
             fprintf(stderr, "Failed to open log file '%s': %s\n",
                     env_log_file, strerror(errno));
             /* Fall back to stderr */
             g_log_file = stderr;
+            g_log_file_path[0] = '\0';
         }
     } else {
         g_log_file = stderr;
+        g_log_file_path[0] = '\0';
     }
 
     const char *env_module = getenv("LOG_MODULE");
@@ -404,10 +539,43 @@ int log_init(void)
         g_include_timestamps = 0;
     }
 
+    const char *env_max_size = getenv("LOG_MAX_SIZE");
+    if (env_max_size != NULL) {
+        size_t max_size = 0;
+        if (parse_positive_size(env_max_size, &max_size) == 0) {
+            g_max_log_size = max_size;
+        }
+    }
+
+    const char *env_rotate_files = getenv("LOG_ROTATE_FILES");
+    if (env_rotate_files != NULL) {
+        size_t rotate_files = 0;
+        if (parse_positive_size(env_rotate_files, &rotate_files) == 0 &&
+            rotate_files <= MAX_ROTATED_LOG_FILES) {
+            g_max_rotated_files = (unsigned int)rotate_files;
+        }
+    }
+
     pthread_mutex_unlock(&log_mutex);
 
     LOG_INFO("Legacy logging subsystem initialized (level=%d, module=%s)", g_log_level, g_module_name);
 
+    return 0;
+}
+
+int log_configure_rotation(size_t max_bytes, unsigned int rotated_files)
+{
+    if (rotated_files == 0) {
+        rotated_files = DEFAULT_ROTATED_LOG_FILES;
+    }
+    if (rotated_files > MAX_ROTATED_LOG_FILES) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&log_mutex);
+    g_max_log_size = max_bytes;
+    g_max_rotated_files = rotated_files;
+    pthread_mutex_unlock(&log_mutex);
     return 0;
 }
 
@@ -527,6 +695,7 @@ void log_message(int level, const char *file, int line, const char *fmt, ...)
 
     /* Write to output */
     if (g_log_file != NULL) {
+        rotate_if_needed_locked(strlen(buffer));
         fputs(buffer, g_log_file);
         fflush(g_log_file);
     } else {
@@ -556,6 +725,9 @@ void log_shutdown(void)
         g_log_file = NULL;
     }
 
+    g_log_file_path[0] = '\0';
+    g_max_log_size = 0;
+    g_max_rotated_files = DEFAULT_ROTATED_LOG_FILES;
     g_log_level = LOG_LEVEL_NONE;
 
     pthread_mutex_unlock(&log_mutex);

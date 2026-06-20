@@ -8,6 +8,7 @@ LDFLAGS = -pie -z relro -z now
 SRCDIR = src
 INCDIR = include
 BUILDDIR = build
+TEST_BINDIR = $(BUILDDIR)/tests
 
 SRCS = $(wildcard $(SRCDIR)/*.c) main.c
 OBJS = $(patsubst %.c, $(BUILDDIR)/%.o, $(SRCS))
@@ -37,7 +38,14 @@ distclean: clean
 test: $(TARGET)
 	./$(TARGET) --sandbox-type seccomp --memory-limit 64 --verbose
 
+test-logger-rotation: $(TEST_BINDIR)/test_logger_rotation
+	./$(TEST_BINDIR)/test_logger_rotation
+
+$(TEST_BINDIR)/test_logger_rotation: tests/test_logger_rotation.c $(SRCDIR)/logger.c $(INCDIR)/logger.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) tests/test_logger_rotation.c $(SRCDIR)/logger.c -o $@ -lpthread
+
 valgrind: $(TARGET)
 	valgrind --leak-check=full --show-leak-kinds=all ./$(TARGET)
 
-.PHONY: all clean distclean test valgrind
+.PHONY: all clean distclean test test-logger-rotation valgrind
