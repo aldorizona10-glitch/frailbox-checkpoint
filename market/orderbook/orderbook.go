@@ -105,18 +105,14 @@ func (ob *OrderBook) GetBids() []*types.Level {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
 
-	result := make([]*types.Level, len(ob.bids))
-	copy(result, ob.bids)
-	return result
+	return cloneLevelPointers(ob.bids)
 }
 
 func (ob *OrderBook) GetAsks() []*types.Level {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
 
-	result := make([]*types.Level, len(ob.asks))
-	copy(result, ob.asks)
-	return result
+	return cloneLevelPointers(ob.asks)
 }
 
 func (ob *OrderBook) GetSnapshot() *types.DepthUpdate {
@@ -185,4 +181,16 @@ func removeLevel(levels []*types.Level, price decimal.Decimal) []*types.Level {
 		}
 	}
 	return levels
+}
+
+func cloneLevelPointers(levels []*types.Level) []*types.Level {
+	result := make([]*types.Level, len(levels))
+	for i, level := range levels {
+		if level == nil {
+			continue
+		}
+		levelCopy := *level
+		result[i] = &levelCopy
+	}
+	return result
 }
