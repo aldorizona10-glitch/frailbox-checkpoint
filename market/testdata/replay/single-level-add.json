@@ -1,0 +1,34 @@
+{
+  "name": "single-level-add",
+  "symbol": "ETH-USD",
+  "events": [
+    {
+      "type": "order",
+      "order": {
+        "id": "bid-1",
+        "side": "buy",
+        "type": "limit",
+        "price": "101",
+        "quantity": "2"
+      }
+    }
+  ],
+  "expected": {
+    "snapshot": {
+      "bids": [
+        {
+          "price": "101",
+          "quantity": "2",
+          "count": 1
+        }
+      ],
+      "asks": []
+    },
+    "statuses": {
+      "bid-1": "filled"
+    },
+    "analytics": {
+      "buffered_samples": 1
+    }
+  }
+}

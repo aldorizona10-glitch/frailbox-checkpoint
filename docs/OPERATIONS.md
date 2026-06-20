@@ -70,6 +70,29 @@ Pre-built Grafana dashboards are available:
 | Business Metrics | Active users, trades, volume | `tot-business-metrics` |
 | Service Health | Per-service health and dependencies | `tot-service-health` |
 
+### Market Replay Fixtures
+
+Replayable market fixtures live under `market/testdata/replay/`. Each JSON file
+contains a `symbol`, an ordered `events` list, and an `expected` block. Supported
+event types are:
+
+- `order`: places a limit or market order through the matching engine and
+  records an order metric sample.
+- `cancel`: cancels an order by id and records a cancel metric sample.
+- `trade`: records a deterministic trade event for fixture-level analytics
+  assertions.
+
+The replay helper in `market/replay` loads fixtures, applies events in file
+order, and compares the final order book snapshot, tracked order statuses,
+fixture trade events, and analytics sample counts. Test failures include the
+event index and expected/actual values so fixture regressions can be traced to
+the replay point that produced them.
+
+To add a scenario, create a new JSON file in `market/testdata/replay/`, keep all
+prices and quantities as strings, and add the fixture name to the relevant
+package test. Fixtures must not depend on wall-clock time, network services, or
+external market data.
+
 ### Alerting Rules
 
 Alerts are sent to PagerDuty and Slack (#ops-alerts channel).

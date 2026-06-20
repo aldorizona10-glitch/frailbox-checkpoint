@@ -1,0 +1,68 @@
+{
+  "name": "two-sided-cancel",
+  "symbol": "ETH-USD",
+  "events": [
+    {
+      "type": "order",
+      "order": {
+        "id": "bid-1",
+        "side": "buy",
+        "type": "limit",
+        "price": "100",
+        "quantity": "1"
+      }
+    },
+    {
+      "type": "order",
+      "order": {
+        "id": "ask-1",
+        "side": "sell",
+        "type": "limit",
+        "price": "105",
+        "quantity": "3"
+      }
+    },
+    {
+      "type": "order",
+      "order": {
+        "id": "bid-2",
+        "side": "buy",
+        "type": "limit",
+        "price": "101",
+        "quantity": "2"
+      }
+    },
+    {
+      "type": "cancel",
+      "cancel": {
+        "order_id": "bid-1"
+      }
+    }
+  ],
+  "expected": {
+    "snapshot": {
+      "bids": [
+        {
+          "price": "101",
+          "quantity": "2",
+          "count": 1
+        }
+      ],
+      "asks": [
+        {
+          "price": "105",
+          "quantity": "3",
+          "count": 1
+        }
+      ]
+    },
+    "statuses": {
+      "ask-1": "filled",
+      "bid-1": "cancelled",
+      "bid-2": "filled"
+    },
+    "analytics": {
+      "buffered_samples": 4
+    }
+  }
+}

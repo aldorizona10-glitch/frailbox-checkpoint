@@ -1,0 +1,72 @@
+{
+  "name": "trade-analytics",
+  "symbol": "ETH-USD",
+  "events": [
+    {
+      "type": "order",
+      "order": {
+        "id": "bid-1",
+        "side": "buy",
+        "type": "limit",
+        "price": "99",
+        "quantity": "1"
+      }
+    },
+    {
+      "type": "order",
+      "order": {
+        "id": "ask-1",
+        "side": "sell",
+        "type": "limit",
+        "price": "101",
+        "quantity": "1"
+      }
+    },
+    {
+      "type": "trade",
+      "trade": {
+        "id": "trade-1",
+        "buy_order_id": "bid-1",
+        "sell_order_id": "ask-1",
+        "price": "100",
+        "quantity": "0.5",
+        "taker_side": "buy"
+      }
+    }
+  ],
+  "expected": {
+    "snapshot": {
+      "bids": [
+        {
+          "price": "99",
+          "quantity": "1",
+          "count": 1
+        }
+      ],
+      "asks": [
+        {
+          "price": "101",
+          "quantity": "1",
+          "count": 1
+        }
+      ]
+    },
+    "statuses": {
+      "ask-1": "filled",
+      "bid-1": "filled"
+    },
+    "trades": [
+      {
+        "id": "trade-1",
+        "buy_order_id": "bid-1",
+        "sell_order_id": "ask-1",
+        "price": "100",
+        "quantity": "0.5",
+        "taker_side": "buy"
+      }
+    ],
+    "analytics": {
+      "buffered_samples": 3
+    }
+  }
+}
