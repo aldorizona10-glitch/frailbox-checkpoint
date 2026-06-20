@@ -9,6 +9,7 @@
 ## Testing
 
 <!-- Required: Describe what you ran locally and the results. Include relevant commands. Verifying the build locally is required. -->
+<!-- Build diagnostic troubleshooting: docs/BUILD_DIAGNOSTICS.md -->
 
 ## Checklist
 
