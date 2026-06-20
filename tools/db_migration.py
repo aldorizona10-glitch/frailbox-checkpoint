@@ -208,9 +208,79 @@ def get_migration_status() -> List[Dict[str, Any]]:
     return status
 
 
-def run_all_migrations(dry_run: bool = False) -> bool:
+def _plan_entry(migration: Dict[str, Any], direction: str) -> Dict[str, Any]:
+    return {
+        "version": migration["version"],
+        "description": migration["description"],
+        "direction": direction,
+        "execution_attempted": False,
+        "would_execute": True,
+    }
+
+
+def build_dry_run_plan(
+    status: List[Dict[str, Any]],
+    direction: str,
+    target_version: Optional[str] = None,
+) -> Dict[str, Any]:
+    if direction == "up":
+        selected = [m for m in status if not m["applied"]]
+    elif direction == "down":
+        if not target_version:
+            raise ValueError("target_version is required for rollback dry-run plans")
+
+        applied = [m for m in status if m["applied"]]
+        versions = {m["version"] for m in status}
+        if target_version not in versions:
+            raise ValueError(f"Migration {target_version} not found")
+
+        applied_versions = {m["version"] for m in applied}
+        if target_version not in applied_versions:
+            raise ValueError(f"Migration {target_version} not found or not yet applied")
+
+        selected = []
+        for migration in reversed(applied):
+            selected.append(migration)
+            if migration["version"] == target_version:
+                break
+    else:
+        raise ValueError(f"Unsupported dry-run direction: {direction}")
+
+    return {
+        "dry_run": True,
+        "direction": direction,
+        "target_version": target_version,
+        "execution_attempted": False,
+        "migration_count": len(selected),
+        "migrations": [_plan_entry(m, direction) for m in selected],
+    }
+
+
+def print_dry_run_plan(plan: Dict[str, Any], json_output: bool = False) -> None:
+    if json_output:
+        print(json.dumps(plan, sort_keys=True))
+        return
+
+    if not plan["migrations"]:
+        print("Dry run - no migrations would be applied")
+        return
+
+    print(f"Dry run - {plan['migration_count']} migration(s) would run:")
+    for migration in plan["migrations"]:
+        print(
+            f"  {migration['version']}: {migration['description']} "
+            f"({migration['direction']})"
+        )
+    print("Dry run - no migrations applied")
+
+
+def run_all_migrations(dry_run: bool = False, json_output: bool = False) -> bool:
     status = get_migration_status()
     pending = [m for m in status if not m["applied"]]
+
+    if dry_run:
+        print_dry_run_plan(build_dry_run_plan(status, "up"), json_output)
+        return True
 
     if not pending:
         print("No pending migrations")
@@ -219,10 +289,6 @@ def run_all_migrations(dry_run: bool = False) -> bool:
     print(f"Found {len(pending)} pending migrations:")
     for m in pending:
         print(f"  {m['version']}: {m['description']}")
-
-    if dry_run:
-        print("Dry run - no migrations applied")
-        return True
 
     all_successful = True
     for m in pending:
@@ -262,12 +328,19 @@ def main():
     parser.add_argument("--status", action="store_true", help="Show migration status")
     parser.add_argument("--create", help="Create a new migration file")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     parser.add_argument("--seed", action="store_true", help="Apply seed data")
     parser.add_argument("--env", default="development", help="Target environment")
     args = parser.parse_args()
 
     if args.status:
         status = get_migration_status()
+        if args.dry_run:
+            print_dry_run_plan(build_dry_run_plan(status, "up"), args.json)
+            return 0
+        if args.json:
+            print(json.dumps(status, sort_keys=True))
+            return 0
         print(f"\nMigration status:")
         print(f"{'Version':<20} {'Description':<40} {'Status':<10}")
         print("-" * 70)
@@ -277,13 +350,24 @@ def main():
         return 0
 
     if args.up:
-        success = run_all_migrations(args.dry_run)
+        success = run_all_migrations(args.dry_run, args.json)
         return 0 if success else 1
 
     if args.down:
         if not args.version:
             print("--version is required for rollback")
             return 1
+        if args.dry_run:
+            try:
+                plan = build_dry_run_plan(get_migration_status(), "down", args.version)
+            except ValueError as error:
+                if args.json:
+                    print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
+                else:
+                    print(str(error), file=sys.stderr)
+                return 1
+            print_dry_run_plan(plan, args.json)
+            return 0
         success = apply_migration(args.version, "down")
         return 0 if success else 1
 
@@ -300,4 +384,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
