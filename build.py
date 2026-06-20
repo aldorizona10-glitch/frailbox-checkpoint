@@ -147,7 +147,7 @@ MODULES = [
         name="frailbox",
         language="C",
         dir=ROOT / "frailbox",
-        build_cmd=["make"],
+        build_cmd=["make", "self-test"],
         clean_cmd=["make", "distclean"],
         build_dir=ROOT / "frailbox" / "frailbox",
     ),
@@ -353,6 +353,7 @@ def build_module(
         env.update(module.env)
 
     start = time.time()
+    output_prefix: list[str] = []
 
     if module.name == "frontend":
         node_modules = module.dir / "node_modules"
@@ -373,6 +374,32 @@ def build_module(
                 return False, time.time() - start, "npm install TIMEOUT (120s)"
 
     if module.name == "engine":
+        print(f"       {color('frailbox self-test...', Colors.GRAY)}")
+        try:
+            self_test_result = run_text_process(
+                ["make", "self-test"],
+                cwd=str(ROOT / "frailbox"),
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return False, time.time() - start, "frailbox self-test TIMEOUT (300s)"
+        except FileNotFoundError as e:
+            return False, 0, f"Command not found while running frailbox self-test: {e}"
+
+        self_test_lines = []
+        if self_test_result.stdout:
+            self_test_lines.append(self_test_result.stdout.strip())
+        if self_test_result.stderr:
+            self_test_lines.append(self_test_result.stderr.strip())
+        self_test_output = "\n".join(self_test_lines)
+        if self_test_result.returncode != 0:
+            return False, time.time() - start, (
+                f"frailbox self-test failed:\n{self_test_output}"
+            )
+        output_prefix.append(f"frailbox self-test:\n{self_test_output or 'PASS'}")
 
         build_type = "Release" if release else "Debug"
         try:
@@ -424,7 +451,7 @@ def build_module(
         return False, 0, f"Command not found: {e}"
 
     elapsed = time.time() - start
-    output_lines = []
+    output_lines = list(output_prefix)
 
     if result.stdout:
         output_lines.append(result.stdout.strip())

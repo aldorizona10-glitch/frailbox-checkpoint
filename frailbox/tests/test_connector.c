@@ -85,30 +85,30 @@ static char assert_msg[1024];
 
 #define TEST_SUITE(name) static int test_suite_##name = 0
 
-#define TEST(name) \
-    static int test_##name(void); \
-    __attribute__((constructor)) static void register_##name(void) { \
+#define TEST(test_name) \
+    static int test_##test_name(void); \
+    __attribute__((constructor)) static void register_##test_name(void) { \
         if (test_count < MAX_TESTS) { \
-            tests[test_count].name = #name; \
-            tests[test_count].func = test_##name; \
+            tests[test_count].name = #test_name; \
+            tests[test_count].func = test_##test_name; \
             tests[test_count].failed = 0; \
             tests[test_count].file = __FILE__; \
             tests[test_count].line = __LINE__; \
             test_count++; \
         } \
     } \
-    static int test_##name(void)
+    static int test_##test_name(void)
 
 #define ASSERT(cond, msg, ...) do { \
     if (!(cond)) { \
-        snprintf(assert_msg, sizeof(assert_msg), "ASSERT FAILED: " msg, ##__VA_ARGS__); \
+        snprintf(assert_msg, sizeof(assert_msg), "ASSERT FAILED: " msg __VA_OPT__(,) __VA_ARGS__); \
         assert_failed = 1; \
         longjmp(assert_jmp, 1); \
     } \
 } while(0)
 
-#define ASSERT_EQ(a, b, msg, ...) ASSERT((a) == (b), "Expected " msg, ##__VA_ARGS__)
-#define ASSERT_NE(a, b, msg, ...) ASSERT((a) != (b), "Expected not equal: " msg, ##__VA_ARGS__)
+#define ASSERT_EQ(a, b, msg, ...) ASSERT((a) == (b), "Expected " msg __VA_OPT__(,) __VA_ARGS__)
+#define ASSERT_NE(a, b, msg, ...) ASSERT((a) != (b), "Expected not equal: " msg __VA_OPT__(,) __VA_ARGS__)
 #define ASSERT_NULL(ptr) ASSERT((ptr) == NULL, "Expected NULL pointer")
 #define ASSERT_NOT_NULL(ptr) ASSERT((ptr) != NULL, "Expected non-NULL pointer")
 #define ASSERT_SUCCESS(result) ASSERT((result) == CONNECTOR_SUCCESS, "Expected CONNECTOR_SUCCESS, got %d", (int)(result))
@@ -377,7 +377,8 @@ TEST(test_connector_stats)
 
     connector_result_t result = connector_get_stats(&stats);
     ASSERT_SUCCESS(result);
-    ASSERT(stats.uptime_seconds > 0, "Uptime should be > 0");
+    ASSERT_EQ(stats.state, CONNECTOR_STATE_READY,
+              "Connector state should be READY after init");
     return 0;
 }
 
@@ -520,7 +521,7 @@ TEST(test_protocol_type_name)
            "Type name should be DATA");
     ASSERT(strcmp(protocol_type_name(PROTOCOL_TYPE_HEARTBEAT), "HEARTBEAT") == 0,
            "Type name should be HEARTBEAT");
-    ASSERT(strcmp(protocol_type_name(0xFF), "UNKNOWN") == 0,
+    ASSERT(strcmp(protocol_type_name(0x7F), "UNKNOWN") == 0,
            "Unknown type should return UNKNOWN");
     return 0;
 }

@@ -209,7 +209,6 @@ static void internal_update_stats(connector_result_t result, uint64_t latency_us
 static uint64_t internal_now_ms(void);
 static void internal_set_error(int code, const char *fmt, ...);
 static connector_result_t internal_validate_config(const connector_config_t *config);
-static connector_result_t internal_health_check(void);
 
 /* ------------------------------------------------------------------ */
 /* IMPLEMENTATION                                                     */

@@ -6,6 +6,10 @@
 #include <sys/mman.h>
 #include <errno.h>
 
+#ifndef MAP_HUGETLB
+#define MAP_HUGETLB 0
+#endif
+
 #define ALIGN_UP(x, a) (((x) + (a) - 1) & ~((a) - 1))
 #define DEFAULT_ALIGNMENT 16
 
@@ -175,8 +179,9 @@ size_t arena_total_capacity(const arena_t *arena) {
 int arena_contains(const arena_t *arena, const void *ptr) {
     arena_region_t *region = arena->regions;
     while (region) {
-        if (ptr >= region->start &&
-            ptr < (char *)region->start + region->size) {
+        const char *start = (const char *)region->start;
+        const char *candidate = (const char *)ptr;
+        if (candidate >= start && candidate < start + region->size) {
             return 1;
         }
         region = region->next;

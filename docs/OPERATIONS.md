@@ -70,6 +70,29 @@ Pre-built Grafana dashboards are available:
 | Business Metrics | Active users, trades, volume | `tot-business-metrics` |
 | Service Health | Per-service health and dependencies | `tot-service-health` |
 
+## Frailbox Self-Test
+
+Reviewers can run a focused frailbox smoke suite without knowing each internal
+test command:
+
+```sh
+make -C frailbox self-test
+```
+
+The self-test builds the frailbox binary, runs the existing connector test
+suite under `frailbox/tests/`, and runs allocator, logger, and sandbox
+initialization smoke checks. It prints a concise summary:
+
+```text
+frailbox self-test summary: passed=4 failed=0 skipped=0
+```
+
+The command exits with a non-zero status if any self-test fails. The repository
+build runner also invokes this path for the `frailbox` module, so
+`python3 build.py -m frailbox` reports the self-test result in diagnostics.
+The engine module runs the same self-test before CMake configuration, so
+`python3 build.py -m engine` also records the summary in its diagnostic log.
+
 ### Alerting Rules
 
 Alerts are sent to PagerDuty and Slack (#ops-alerts channel).
