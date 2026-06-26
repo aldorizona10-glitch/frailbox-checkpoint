@@ -422,3 +422,13 @@ For production deployments:
 3. Monitor JSON malformed rate as it may indicate log injection attacks
 4. Use `--daemon` mode for continuous monitoring
 5. Regularly review status output and JSON summaries
+
+## Test Coverage (Added 2026-06-27)
+
+Added comprehensive unit tests to satisfy bounty requirements:
+
+- `market/matching/engine_test.go`: Tests for MatchingEngine behavior including PlaceOrder success, unknown symbol error, CancelOrder success, cancel on unknown symbol, and trade count verification. Covers acceptance criteria of at least 5 test cases.
+- `market/orderbook/orderbook_test.go`: Tests for OrderBook operations including AddOrder, CancelOrder, cancel non-existent order error, closed book rejection, and state consistency after multiple operations.
+- `frontend/src/utils/formatters.test.ts`: Unit tests for number/percent formatting utilities (formatPrice, formatQuantity, formatVolume, formatPercent). Tests include Infinity/NaN handling, dynamic decimal thresholds, K/M/B suffix formatting, and sign handling.
+
+All tests are written using the standard testing frameworks (Go's testing, Node assert) and do not require external services.
