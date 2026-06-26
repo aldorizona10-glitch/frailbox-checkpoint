@@ -15,6 +15,26 @@
 
 ## Monitoring
 
+### Formatter Edge-Case Verification
+
+Frontend number display behavior is covered by the formatter regression tests in
+`frontend/tests/formatters.test.ts`. Run them without any external services:
+
+```bash
+cd frontend
+npm run test:formatters
+```
+
+The tests verify the market data formatting rules used by the UI:
+- `formatPrice` returns the dash fallback for `Infinity` and `NaN`, and chooses
+  decimals by the documented magnitude thresholds (`>=10000`, `>=100`, `>=1`,
+  `>=0.01`, `>=0.0001`, and smaller values).
+- `formatQuantity` preserves zero as `0` and applies `K`/`M` suffixes.
+- `formatVolume` applies `K`/`M`/`B` suffixes and uses the dash fallback for
+  zero/non-finite values.
+- `formatPercent` includes the percent sign and explicit positive/zero sign
+  prefix while preserving negative signs.
+
 ### Health Check Endpoints
 
 Each service exposes a health check endpoint:
