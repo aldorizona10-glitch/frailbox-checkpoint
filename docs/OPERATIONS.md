@@ -37,6 +37,32 @@ The health check returns a 200 OK response with a JSON body:
 }
 ```
 
+### Matching Engine Regression Checks
+
+The market matching engine has focused unit coverage for order placement,
+cancellation, and trade-count bookkeeping in `market/matching/engine_test.go`.
+These tests exercise the in-memory `MatchingEngine` and `OrderBook` directly,
+so they do not require external services, a database, or a running WebSocket
+gateway.
+
+Run the matching tests from the market module:
+
+```bash
+cd market
+go test ./matching
+```
+
+The covered behavior includes:
+
+- placing an order on an existing symbol assigns an order ID, timestamps, filled
+  quantity, zero remaining quantity, and writes the level to the book;
+- placing an order for an unknown symbol returns `ErrSymbolNotFound`;
+- cancelling an existing order delegates to the symbol book and removes the
+  price level;
+- cancelling on an unknown symbol returns `ErrSymbolNotFound`;
+- trade count and recent-trade reads stay accurate when the current order book
+  implementation returns no trades.
+
 ### Prometheus Metrics
 
 Each service exposes Prometheus metrics at `/metrics` on the same port as the
