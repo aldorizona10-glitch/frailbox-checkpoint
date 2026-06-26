@@ -422,3 +422,18 @@ For production deployments:
 3. Monitor JSON malformed rate as it may indicate log injection attacks
 4. Use `--daemon` mode for continuous monitoring
 5. Regularly review status output and JSON summaries
+
+## Frontend Formatter Tests
+
+The frontend formatter unit tests cover market number display behavior for
+invalid prices, dynamic price decimal thresholds, quantity and volume suffixes,
+zero fallbacks, and signed percent output.
+
+Run the formatter regression suite from the frontend workspace:
+
+```bash
+cd frontend
+npm test
+```
+
+These tests do not require external services or a running server.
