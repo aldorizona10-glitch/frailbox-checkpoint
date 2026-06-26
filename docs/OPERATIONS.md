@@ -13,6 +13,16 @@
 > The known issues from the migration are tracked in the "K8s Migration Known
 > Issues" spreadsheet which is linked from the team's shared drive.
 
+## Market Order Book Test Coverage
+
+The market order book unit tests exercise the in-memory add and cancel flows without requiring external services or a database. The tests verify that buy orders are inserted on the bid side, sell orders are inserted on the ask side, bid and ask levels sort by best price, cancellations remove both the order-map entry and the visible level, missing cancellations return `ErrOrderNotFound`, and closed books reject both add and cancel requests with `ErrBookClosed`.
+
+Run the focused test suite from the `market` module with:
+
+```sh
+go test ./orderbook
+```
+
 ## Monitoring
 
 ### Health Check Endpoints
