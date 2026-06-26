@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": false,
+    "noEmit": false,
+    "outDir": ".test-dist",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/utils/formatters.ts", "src/utils/formatters.test.ts"]
+}
