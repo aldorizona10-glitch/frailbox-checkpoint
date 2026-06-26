@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-06-26T18:01:45.842018+00:00",
+  "commit": "fa564fee",
+  "diagnostic_logd": [
+    "diagnostic/build-fa564fee-part001.logd",
+    "diagnostic/build-fa564fee-part002.logd",
+    "diagnostic/build-fa564fee-part003.logd",
+    "diagnostic/build-fa564fee-part004.logd",
+    "diagnostic/build-fa564fee-part005.logd"
+  ],
+  "diagnostic_logd_error": null,
+  "message_blocker": null,
+  "chunked": true,
+  "chunk_size_bytes": 41943040,
+  "password": "e82277ab546255001299",
+  "decrypt_command": "encryptly unpack diagnostic/build-fa564fee.logd <outdir> --password e82277ab546255001299",
+  "total_modules": 1,
+  "passed": 1,
+  "failed": 0,
+  "modules": [
+    {
+      "name": "market",
+      "status": "PASS",
+      "elapsed_seconds": 3.072,
+      "artifact": "market/market",
+      "output": "cwd: market\ncommand: go build -o market .\nexit_code: 0"
+    }
+  ],
+  "pr_note": "Include the encrypted diagnostic logd artifact(s): diagnostic/build-fa564fee-part001.logd, diagnostic/build-fa564fee-part002.logd, diagnostic/build-fa564fee-part003.logd, diagnostic/build-fa564fee-part004.logd, diagnostic/build-fa564fee-part005.logd. The encrypted .logd is the required diagnostic content for PR review; this JSON file is metadata. Maintainers may ask you to remove these diagnostic artifacts before merging."
+}

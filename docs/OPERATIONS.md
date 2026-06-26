@@ -58,6 +58,15 @@ Key metrics to monitor:
 | `goroutine_count` | Gauge | Go routine count | > 5000 | > 10000 |
 | `gc_pause_time_ms` | Histogram | GC pause time | > 100ms | > 500ms |
 
+### Market Order Book Test Coverage
+
+The market order book package includes unit tests for add and cancel behavior
+that do not require external services or a database. The tests verify that buy
+orders are stored on the bid side, sell orders are stored on the ask side with
+ascending price ordering, successful cancellation removes both the order map
+entry and price level, cancelling a missing order returns `ErrOrderNotFound`,
+and adding an order after `Close` returns `ErrBookClosed`.
+
 ### Grafana Dashboards
 
 Pre-built Grafana dashboards are available:
