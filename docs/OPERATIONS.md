@@ -422,3 +422,20 @@ For production deployments:
 3. Monitor JSON malformed rate as it may indicate log injection attacks
 4. Use `--daemon` mode for continuous monitoring
 5. Regularly review status output and JSON summaries
+
+## Frontend formatter edge-case tests
+
+The frontend number formatter tests live in `frontend/src/utils/formatters.test.mjs` and run without external services or a running server. They document the expected behavior for the market-data formatter edge cases covered by bounty #3:
+
+- `formatPrice` returns ` - ` for non-finite values and selects decimals by magnitude.
+- `formatQuantity` keeps zero as `0` and uses `K` / `M` suffixes for large absolute values.
+- `formatVolume` hides zero as ` - ` and uses `K`, `M`, and `B` suffixes.
+- `formatPercent` keeps a leading `+` for positive and zero values, preserves `-` for negatives, and appends `%`.
+
+Run them with:
+
+```bash
+cd frontend
+npm test
+```
+
