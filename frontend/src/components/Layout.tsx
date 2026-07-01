@@ -1,6 +1,7 @@
 import React from 'react';
 import Header from './Header';
 import Sidebar from './Sidebar';
+import ErrorBoundary from './ErrorBoundary';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -11,13 +12,19 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="app-layout">
-      <Header
-        onMenuToggle={() => setSidebarOpen((prev) => !prev)}
-      />
+      <ErrorBoundary sectionName="Header" compact>
+        <Header
+          onMenuToggle={() => setSidebarOpen((prev) => !prev)}
+        />
+      </ErrorBoundary>
       <div className="app-body">
-        <Sidebar isOpen={sidebarOpen} />
+        <ErrorBoundary sectionName="Sidebar" compact>
+          <Sidebar isOpen={sidebarOpen} />
+        </ErrorBoundary>
         <main className="app-content">
-          {children}
+          <ErrorBoundary sectionName="Main dashboard panel">
+            {children}
+          </ErrorBoundary>
         </main>
       </div>
     </div>
